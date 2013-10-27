@@ -92,6 +92,7 @@ class OptDepth(object):
 		kneiske		Kneiske & Dole (2010)
 		dominguez	Dominguez et al. (2011)
 		inuoe		Inuoe et al. (2013)		http://www.slac.stanford.edu/~yinoue/Download.html
+		gilmore		Gilmore et al. (2012)		(fiducial model)
 	"""
 	self.model = model
 
@@ -132,8 +133,15 @@ class OptDepth(object):
 	    self.z = data[0,1:]
 	    self.tau = data[1:,1:]
 	    self.logEGeV = np.log10(data[1:,0]*1e3)
+	elif model == 'gilmore':
+	    if file_name == 'None':
+		file_name = ebl_file_path + 'opdep_fiducial.dat'
+	    data = np.loadtxt(file_name)
+	    self.z = data[0,1:]
+	    self.tau = data[1:,1:]
+	    self.logEGeV = np.log10(data[1:,0]/1e3)
 	else:
-	    raise ValueError("Unknown model chosen! Use kneiske, franceschini or dominguez")
+	    raise ValueError("Unknown EBL model chosen!")
 	# Add zeros 
 	#self.z = np.insert(self.z,0,0.)
 	#self.tau = np.insert(self.tau,0,0.,axis=1)

@@ -78,6 +78,7 @@ class EBL(object):
 		kneiske		Kneiske & Dole (2010)
 		dominguez	Dominguez et al. (2011)
 		inuoe		Inuoe et al. (2013)		http://www.slac.stanford.edu/~yinoue/Download.html
+		gilmore		Gilmore et al. (2012)		(fiducial model)
 	"""
 	self.z		= np.array([])		#redshift
 	self.logl	= np.array([])		#log (wavelength / micron)
@@ -101,8 +102,10 @@ class EBL(object):
 	    elif model == 'inoue':
 		file_name = ebl_file_path + 'EBL_z_0_baseline.dat'
 		logging.warning("Inoue model is only provided for z = 0!")
+	    elif model == 'gilmore':
+		file_name = ebl_file_path + 'eblflux_fiducial.dat'
 	    else:
-		raise ValueError("Unknown model chosen! Use kneiske, franceschini or dominguez")
+		raise ValueError("Unknown EBL model chosen!")
 
 	    data = np.loadtxt(file_name)
 	    if model == 'inoue':
@@ -111,6 +114,10 @@ class EBL(object):
 		self.nuInu = np.log10(data[:,1])
 		self.eblSpline = interp1d(self.logl,self.nuInu)
 		return
+	    if model == 'gilmore':
+		self.z = data[0,1:]
+		self.logl = np.log10(data[2:,0] * 1e-4)
+		self.nuInu = np.log10(data[2:,1:])	# do not use first lines, as it includes zeros, is photon density
 	    else:
 		self.z = data[0,1:]
 		self.logl = np.log10(data[1:,0])
