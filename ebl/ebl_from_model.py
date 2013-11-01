@@ -116,8 +116,10 @@ class EBL(object):
 		return
 	    if model == 'gilmore':
 		self.z = data[0,1:]
-		self.logl = np.log10(data[2:,0] * 1e-4)
-		self.nuInu = np.log10(data[2:,1:])	# do not use first lines, as it includes zeros, is photon density
+		self.logl = np.log10(data[2:,0] * 1e-4)			# convert from Angstrom to micro meter
+		self.nuInu = data[2:,1:]			# do not use first lines, as it includes zeros, is photon density
+		self.nuInu *= 1e6 * np.meshgrid(data[2:,0],self.z)[0].transpose()		# convert from ergs/s/cm^2/Ang/sr to nW/m^2/sr
+		self.nuInu = np.log10(self.nuInu)
 	    else:
 		self.z = data[0,1:]
 		self.logl = np.log10(data[1:,0])
