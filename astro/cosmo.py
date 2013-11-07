@@ -1,5 +1,8 @@
 import math
 from eblstud.misc.constants import *
+import numpy as np
+import scipy.integrate
+from scipy.integrate import simps
 
 def nphotCMB(eps):
     """
@@ -23,6 +26,34 @@ def PropTime2Redshift(h = h, OmegaM = OmegaM, OmegaL = OmegaL):
     """
     return lambda z: 1./ ( h / 9.777752 ) / ( (1. + z) * math.sqrt((1.+ z)**3. * OmegaM
     									+ OmegaL) )
+def LumiDistanceSimps(z,cosmo=[h, OmegaM, OmegaL],steps = 30):
+    """
+    Return luminosity distance for redshift z and cosmological parameters [h, OmegaM, OmegaL]
+    from simps integration
+
+    Paramters
+    ---------
+    z:	n-dim array, redshift values
+    cosmo:	list with parameter values for h, Omega_M and Omeaga_L
+    steps:	int, number of integration steps
+
+    Returns
+    -------
+    D:	n-dim array luminosity distance for each redshift in cm
+
+    Notes
+    -----
+    See Dermer & Menon (2009) Eq. 4.37 p. 44
+    """
+    if np.isscalar(z): 
+	z = np.array([z])
+    z_array = np.zeros((z.shape[0],steps))
+    for i,z0 in enumerate(z):
+	z_array[i] = np.linspace(0.,z0,steps)
+
+    kernel = 1./ ( np.sqrt((1.+ z_array)**3. * OmegaM + OmegaL) )
+
+    return 1e9 * yr2sec * CGS_c / ( h / 9.777752 ) * (1. + z) * simps(kernel,z_array,axis = 1)
 
 def LumiDistanceKern(h = h, OmegaM = OmegaM, OmegaL = OmegaL):
     """
@@ -30,8 +61,6 @@ def LumiDistanceKern(h = h, OmegaM = OmegaM, OmegaL = OmegaL):
     """
     return lambda z: 1./ ( math.sqrt((1.+ z)**3. * OmegaM + OmegaL) )
 
-import numpy as np
-import scipy.integrate
 
 def LumiDistance(z, cosmo=[h, OmegaM, OmegaL]):
     """

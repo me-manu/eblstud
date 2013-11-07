@@ -16,7 +16,6 @@ __author__ = "M. Meyer // manuel.meyer@physik.uni-hamburg.de"
 import numpy as np
 from scipy.optimize import leastsq
 from scipy.integrate import quad
-from eblstud.stats import misc
 import scipy.special
 
 gammainc = scipy.special.gammainc
