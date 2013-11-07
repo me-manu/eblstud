@@ -99,7 +99,7 @@ class OptDepth(object):
 	try:
 	    ebl_file_path = os.environ['EBL_FILE_PATH']
 	except KeyError:
-	    logging.warning("The EBL File environment variable is not set! Using {0} as path instead.".format(path))
+	    warnings.warn("The EBL File environment variable is not set! Using {0} as path instead.".format(path), RuntimeWarning)
 	    ebl_file_path = path
 
 	if model == 'kneiske' or model == 'dominguez':
