@@ -57,10 +57,10 @@ def angsep(r1,r2,d1,d2):
 
     Parameters:
     -----------
-    r1: float or n-dim array, RA of 1st source
-    r2: float or n-dim array, DEC of 1st source
-    d1: float or n-dim array, RA of 2nd source
-    d2: float or n-dim array, DEC of 2nd source
+    r1: float or n-dim array, RA of 1st source in degrees
+    r2: float or n-dim array, DEC of 1st source in degrees
+    d1: float or n-dim array, RA of 2nd source in degrees
+    d2: float or n-dim array, DEC of 2nd source in degrees
 
     Returns
     -------
@@ -77,8 +77,9 @@ def angsep(r1,r2,d1,d2):
 	d2 = np.array([d2])
     th1 = (90.0*np.ones(d1.shape)-d1)*pi/180.
     th2 = (90.0*np.ones(d2.shape)-d2)*pi/180.  
-    ph1 = r1 * pi/180.
-    ph2 = r2 * pi/180.
+    ph1 = pi/180. * r1  
+    ph2 = pi/180. * r2  
+
     cth = np.sin(th1)*np.sin(th2)*\
 	(np.cos(ph1)*np.cos(ph2)+np.sin(ph1)*np.sin(ph2))+np.cos(th1)*np.cos(th2)
     cth[np.where(cth > 1.)[0]] = np.zeros(cth[np.where(cth > 1.)[0]].shape)
