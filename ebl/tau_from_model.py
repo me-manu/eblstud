@@ -20,6 +20,7 @@ __author__ = "M. Meyer // manuel.meyer@physik.uni-hamburg.de"
 import numpy as np
 import math
 from scipy.interpolate import interp1d
+from scipy.integrate import simps
 from scipy.interpolate import RectBivariateSpline as RBSpline
 import warnings
 import os
@@ -225,6 +226,44 @@ class OptDepth(object):
 	"""
 	Enew = interp1d(self.tauSpline(self.logEGeV,z)[:,0],self.logEGeV)
 	return Enew(tau)
+
+    def opt_depth_Ebin(self,z,Ebin,func,params,Esteps = 50):
+	"""
+	Compute average optical depth within an energy bin assuming a specific spectral shape
+
+	Parameters
+	----------
+	z:	float, redshift
+	Ebin:	n-dim array with Energy bin boundaries in TeV
+	func:	function for spectrum, needs to be of the form func(params,Energy [TeV]), needs to except 2xn dim arrays
+	params:	parameters that are past to func
+
+	kwargs
+	------
+	Esteps: int, number of energy integration steps, default: 50
+
+	Returns
+	-------
+	(n-1)-dim array with average tau values for each energy bin.
+
+	Notes
+	-----
+	Any energy dispersion is neglected.
+	"""
+	# design a 2d matrix with energy integration steps
+	for i,E in enumerate(Ebin):
+	    if not i:
+		logE_array	= np.linspace(np.log(E),np.log(Ebin[i+1]),Esteps)
+		t_array		= self.opt_depth_array(z,np.exp(logE_array))[0]
+	    elif i == len(Ebin) - 1:
+		break
+	    else:
+		logE		= np.linspace(np.log(E),np.log(Ebin[i+1]),Esteps)
+		logE_array	= np.vstack((logE_array,logE))
+		t_array		= np.vstack((t_array,self.opt_depth_array(z,np.exp(logE))[0]))
+	# return averaged tau value
+	return	simps(func(params,np.exp(logE_array)) * t_array * logE_array, logE_array, axis = 1) / \
+		simps(func(params,np.exp(logE_array)) * logE_array, logE_array, axis = 1)
 
     def clear(self):
 	self.z = np.array([])
