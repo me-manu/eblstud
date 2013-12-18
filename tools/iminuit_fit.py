@@ -1,1588 +1,529 @@
 """
 Module Containing tools for fitting with minuit migrad routine.
+Based on python module iminuit
 
 History of changes:
-Version 1.0
-- Created 9th May 2011
-- 1st June: Added models, functions now are
+Version 0.1
+- Created 9th Dec 2013
 	* MinuitFitPL
 	* MinuitFitLP
-	* MinuitFitEPL
 	* MinuitFitBPL
-	* MinuitFitEBPL
-	* MinuitFitDBPL
-	* MinuitFitEDBPL
 """
 
+# - Imports ------------------------- #
 import numpy as np
 from eblstud.tools.lsq_fit import *
 import scipy.special
-import minuit
-import warnings
+import iminuit as minuit
+import warnings,logging
+from math import ceil,floor
+# ----------------------------------- #
 
-class FitMinuit:
-    def __init__(self,minos = False):
-# - Set Minuit Fit parameters --------------------------------------------------------------- #
-	self.FitParams = {
-	    'int_steps' : 0.1,		# Initial step width, multiply with initial values in m.errors
-	    'strategy'  : 0,		# 0 = fast, 1 = default, 2 = thorough
-	    'printMode' : 0,		# Shut Minuit up
-	    'maxcalls'  : 1000,		# Maximum Number of Function calls, default is None
-	    'tol'       : 0.1,		# Tolerance of fit = 0.001*tol*fit
-	    'up'        : 1.,		# 1 for chi^2, 0.5 for log-likelihood
-	    'SpecIndLoLim': -15.,	# Lower limit for spectral index
-	    'SpecIndUpLim': 35.,	# Upper limit for spectral index
-	    'SupExpLoLim' : 2.,		# Lower limit for super exponential parameter
-	    'SupExpUpLim' : 15.		# Upper limit for super exponential parameter
-	}
-	self.minos = minos
-	return
-# - Initial Fit Parameters ------------------------------------------------------------------ #
-    def SetFitParams(self,Minuit):
-	Minuit.maxcalls = self.FitParams['maxcalls']
-	Minuit.strategy = self.FitParams['strategy']
-	Minuit.tol	= self.FitParams['tol']
-	Minuit.up	= self.FitParams['up']
-	Minuit.printMode= self.FitParams['printMode']
-	return
+logging.basicConfig(level=logging.INFO)
+
+# - Fitting functions ----------------------------------------------------------------------- #
+pl      = lambda p,x : p['Prefactor'] * (x / p['Scale']) ** p['Index']
+lp      = lambda p,x : p['norm'] * (x / p['Eb']) ** (p['alpha'] + p['beta'] * np.log(x / p['Eb']))
+pl2     = lambda p,x : p['Integral'] * x ** p['Index'] * (p['Index'] + 1.) / (p['UpperLimit'] ** (p['Index'] + 1.) - p['LowerLimit'] ** (p['Index'] + 1.))
+bpl_in	= lambda x,xb, f: 1. + np.power(x*np.abs(xb),f)
+bpl	= lambda p, x: p['Prefactor']*(np.power(x / p['Scale'],p['Index1']))*np.power(bpl_in(x / p['Scale'],p['BreakValue'],p['Smooth']),(p['Index2'] - p['Index1'])/p['Smooth'])
+
+# - Chi functions --------------------------------------------------------------------------- #
+errfunc = lambda func, p, x, y, s: (func(p, x)-y) / s 
+
+# - P-value --------------------------------------------------------------------------------- #
+pvalue = lambda dof, chisq: 1. - gammainc(.5 * dof, .5 * chisq)
+
+# - Butterfly functions --------------------------------------------------------------------- #
+butterfly_pl = lambda p,x,s,cov : np.sqrt ((s['Prefactor']/p['Prefactor']) ** 2. + np.log(x/p['Scale'])**2. * s['Index'] ** 2. \
+					+ 2. * cov['Index','Prefactor'] * np.log(x/p['Scale']) / p['Prefactor']             # Err^2 / Flux^2 for power law
+					)
+butterfly_lp = lambda p,x,s,cov : np.sqrt( (s['norm']/p['norm']) ** 2. \
+					+ 2. * cov['norm','alpha'] * np.log(x/p['Eb']) / p['norm'] \
+					+ np.log(x / p['Eb'] ) **2. * ( \
+					s['alpha'] ** 2. + s['beta'] ** 2. * np.log(x/p['Eb']) ** 2. \
+					+ 2. * (cov['norm','beta'] / p['norm'] + cov['alpha','beta'] * np.log(x/p['Eb']) ) \
+					)
+					)
+def butterfly_bpl(p,x,s,cov):
+    """
+    Compute butterfly from matrix product between Jacobian and covariance matrix
+    """
+    inner		= bpl_in(x,p['BreakValue'],p['Smooth'])
+    J = {}
+    J['Prefactor']	= 1. / p['Prefactor'] * np.ones(x.shape[0])
+    J['Index1']		= (np.log(x / p['Scale']) - np.log(inner) / p['Smooth'])
+    J['Index2']		= np.log(inner) / p['Smooth']  
+    J['BreakValue']	= (p['Index2'] - p['Index1']) / inner * x * (x * p['BreakValue']) ** (p['Smooth'] - 1.)
+    J['Index2']	= np.zeros(x.shape[0])
+    covar	= np.zeros((4,4))
+    result = 0.
+    for i,ki in enumerate(J.keys()):
+	for j,kj in enumerate(J.keys()):
+	    result += cov[ki,kj] * J[ki] * J[kj]
+    return np.sqrt(result)
+
+
 
 # - Power Law Fit --------------------------------------------------------------------------- #
-    def MinuitFitPL(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit Powerlaw to data using minuit.migrad
+def MinuitFitPL(x,y,s,full_output=False, **kwargs):
+    """
+    Function to fit Powerlaw to data using minuit.migrad
+
+    y(x) = p['Prefactor'] * ( x / p['Scale'] ) ** p['Index']
+
+    Parameters
+    ----------
+    x:	n-dim array containing the measured x values
+    y:	n-dim array containing the measured y values, i.e. y = y(x)
+    s:  n-dim array with (symmetric) measurment uncertainties on y
+
+    kwargs
+    ------
+    full_output:	bool, if True, errors will be estimated additionally with minos, covariance matrix will also be returned
+    print_level:	0,1, level of verbosity, defualt = 0 means nothing is printed
+    int_steps:		float, initial step width, multiply with initial values of errors, default = 0.1
+    strategy:		0 = fast, 1 = default (default), 2 = thorough
+    tol:		float, required tolerance of fit = 0.001*tol*UP, default = 1.
+    up			float, errordef, 1 (default) for chi^2, 0.5 for log-likelihood
+    ncall		int, number of maximum calls, default = 1000
+    pedantic		bool, if true (default), give all warnings
+    limits		dictionary containing 2-tuple for all fit parameters
+    pinit		dictionary with initial fit for all fir parameters
+    fix			dictionary with booleans if parameter is frozen for all fit parameters
+
+    Returns
+    -------
+    tuple containing
+    	0. list of Fit Stats: ChiSq, Dof, P-value
+    	1. dictionary with final fit parameters
+    	2. dictionary with 1 Sigma errors of final fit parameters
+    if full_output = True:
+	3. dictionary with +/- 1 Sigma Minos errors
+	4. dictionary with covariance matrix
+
+    Notes
+    -----
+    iminuit documentation: http://iminuit.github.io/iminuit/index.html
+    """
+# --- Set the defaults
+    kwargs.setdefault('print_level',0)		# no output
+    kwargs.setdefault('int_steps',0.1)		# Initial step width, multiply with initial values in m.errors
+    kwargs.setdefault('strategy',1)		# 0 = fast, 1 = default, 2 = thorough
+    kwargs.setdefault('tol',1.)			# Tolerance of fit = 0.001*tol*UP
+    kwargs.setdefault('up',1.)			# 1 for chi^2, 0.5 for log-likelihood
+    kwargs.setdefault('ncall',1000.)		# number of maximum calls
+    kwargs.setdefault('pedantic',True)		# Give all warnings
+    kwargs.setdefault('limits',{})
+    kwargs.setdefault('pinit',{})
+    kwargs.setdefault('fix',{'Index': False , 'Prefactor': False, 'Scale' : True})	
+# --------------------
+	
+    npar = 2
+
+    if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
+	raise TypeError("Lists must have same length!")
+    if not len(x) > npar:
+	print "Not sufficient number of data points => Returning -1"
+	return -1
+
+    x = np.array(x)
+    y = np.array(y)
+    s = np.array(s)
+
+    exp = floor(np.log10(y[0]))
+    y /= 10.**exp
+    s /= 10.**exp
+
+    def FillChiSq(Prefactor,Index,Scale):
+	params = {'Prefactor': Prefactor, 'Index': Index, 'Scale': Scale}
+	return np.sum(errfunc(pl,params,x,y,s)**2.)
+
+    # Set initial Fit parameters, initial step width and limits of parameters
+    if not len(kwargs['pinit']):
+	kwargs['pinit']['Scale']	= x[np.argmax(y/s)]
+	kwargs['pinit']['Prefactor']	= prior_norm(x / kwargs['pinit']['Scale'],y)
+	kwargs['pinit']['Index']	= prior_pl_ind(x / kwargs['pinit']['Scale'],y)
+    else:
+	kwargs['pinit']['Prefactor'] /= 10.**exp
+    if not len(kwargs['limits']):
+	kwargs['limits']['Prefactor'] = (kwargs['pinit']['Prefactor'] / 1e2, kwargs['pinit']['Prefactor'] * 1e2)
+	kwargs['limits']['Index'] = (-10.,2.)
+	kwargs['limits']['Scale'] = (kwargs['pinit']['Scale'] / 1e2, kwargs['pinit']['Scale'] * 1e2)
     
-	pinit[0] = norm
-	pinit[1] = pl index
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 2
-	fitfunc = errfunc_pl
 
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
+    m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],
+			# initial values
+			Prefactor	= kwargs['pinit']["Prefactor"],
+			Index = kwargs['pinit']["Index"],
+			Scale = kwargs['pinit']["Scale"],
+			# errors
+			error_Prefactor	= kwargs['pinit']['Prefactor'] * kwargs['int_steps'],
+			error_Index	= kwargs['pinit']['Index'] * kwargs['int_steps'],
+			error_Scale	= 0.,
+			# limits
+			limit_Prefactor = kwargs['limits']['Prefactor'],
+			limit_Index	= kwargs['limits']['Index'],
+			limit_Scale	= kwargs['limits']['Scale'],
+			# freeze parametrs 
+			fix_Prefactor	= kwargs['fix']['Prefactor'],
+			fix_Index	= kwargs['fix']['Index'],
+			fix_Scale	= kwargs['fix']['Scale'],
+			# setup
+			pedantic	= kwargs['pedantic'],
+			errordef	= kwargs['up'],
+			)
 
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
+    # Set initial fit control variables
+    m.tol	= kwargs['tol']
+    m.strategy	= kwargs['strategy']
 
-	def FillChiSq(N0,G1):
-	    params = N0,G1
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
+    m.migrad(ncall = kwargs['ncall'])
+    # second fit
+    m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
+    m.migrad(ncall = kwargs['ncall'])
+    logging.info("PL: Migrad minimization finished")
 
-       # Set initial fit control variables
-	self.SetFitParams(m)
+    m.hesse()
+    logging.info("PL: Hesse matrix calculation finished")
 
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'] = prior_pl_ind(x,y)
-	else:
-	    m.values['N0'] = pinit[0]
-	    m.values['G1'] = pinit[1]
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
+    if full_output:
+	logging.info("PL: Running Minos for error estimation")
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.minos(k,1.)
+	logging.info("PL: Minos finished")
 
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
+    fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
 
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    pfinal[i] = m.values[val]
-	    fit_err[i] = m.errors[val]
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
+    m.values['Prefactor'] *= 10.**exp
+    m.errors['Prefactor'] *= 10.**exp
 
-# - Gaussian Fit --------------------------------------------------------------------------- #
-    def MinuitFitGaussian(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit logartithmic parabola to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = Mean
-	pinit[2] = 1./Sqrt(Var)
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 3
-	fitfunc = errfunc_gaussian
+    for k in kwargs['pinit'].keys():
+	if kwargs['fix'][k]:
+	    continue
+	m.covariance[k,'Prefactor'] *= 10.**exp 
+	m.covariance['Prefactor',k] *= 10.**exp 
 
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
 
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
+    if full_output:
+	return fit_stat,m.values, m.errors,m.merrors, m.covariance
+    else:	
+	return fit_stat,m.values, m.errors
 
-	def FillChiSq(N0,Mean,Var):
-	    params = N0,Mean,Var
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
 
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = 1.
-	    m.values['Mean'], m.values['Var'] = prior_gaussian(x)
-	else:
-	    m.values['N0'],m.values['Mean'],m.values['Var'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['Mean'] = limits[i]
-		if i == 2:
-		    m.limits['Var'] = limits[i]
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('Mean',1.)
-		m.minos('Var',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['Mean']
-		fit_err[i] = m.errors['Mean']
-	    if i == 2:
-		pfinal[i] = m.values['Var']
-		fit_err[i] = m.errors['Var']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
 # - Logarithmic Parabola Fit----------------------------------------------------------------- #
-    def MinuitFitLP(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit logartithmic parabola to data using minuit.migrad
+def MinuitFitLP(x,y,s,full_output=False, **kwargs):
+    """
+    Function to fit Logarithmic Parabola to data using minuit.migrad
+
+    y(x) = p['norm'] * ( x / p['Eb'] ) ** (p['alpha'] + p['beta'] * ln( x / p['Eb']))
+
+    Parameters
+    ----------
+    x:	n-dim array containing the measured x values
+    y:	n-dim array containing the measured y values, i.e. y = y(x)
+    s:  n-dim array with (symmetric) measurment uncertainties on y
+
+    kwargs
+    ------
+    full_output:	bool, if True, errors will be estimated additionally with minos, covariance matrix will also be returned
+    print_level:	0,1, level of verbosity, defualt = 0 means nothing is printed
+    int_steps:		float, initial step width, multiply with initial values of errors, default = 0.1
+    strategy:		0 = fast, 1 = default (default), 2 = thorough
+    tol:		float, required tolerance of fit = 0.001*tol*UP, default = 1.
+    up			float, errordef, 1 (default) for chi^2, 0.5 for log-likelihood
+    ncall		int, number of maximum calls, default = 1000
+    pedantic		bool, if true (default), give all warnings
+    limits		dictionary containing 2-tuple for all fit parameters
+    pinit		dictionary with initial fit for all fir parameters
+    fix			dictionary with booleans if parameter is frozen for all fit parameters
+
+    Returns
+    -------
+    tuple containing
+    	0. list of Fit Stats: ChiSq, Dof, P-value
+    	1. dictionary with final fit parameters
+    	2. dictionary with 1 Sigma errors of final fit parameters
+    if full_output = True:
+	3. dictionary with +/- 1 Sigma Minos errors
+	4. dictionary with covariance matrix
+
+    Notes
+    -----
+    iminuit documentation: http://iminuit.github.io/iminuit/index.html
+    """
+# --- Set the defaults
+    kwargs.setdefault('print_level',0)		# no output
+    kwargs.setdefault('int_steps',0.1)		# Initial step width, multiply with initial values in m.errors
+    kwargs.setdefault('strategy',1)		# 0 = fast, 1 = default, 2 = thorough
+    kwargs.setdefault('tol',1.)			# Tolerance of fit = 0.001*tol*UP
+    kwargs.setdefault('up',1.)			# 1 for chi^2, 0.5 for log-likelihood
+    kwargs.setdefault('ncall',1000.)		# number of maximum calls
+    kwargs.setdefault('pedantic',True)		# Give all warnings
+    kwargs.setdefault('limits',{})
+    kwargs.setdefault('pinit',{})
+    kwargs.setdefault('fix',{'alpha': False , 'beta': False, 'norm': False, 'Eb' : True})	
+# --------------------
+    npar = 3
+
+
+    if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
+	raise TypeError("Lists must have same length!")
+    if not len(x) > npar:
+	print "Not sufficient number of data points => Returning -1"
+	return -1
+
+    x = np.array(x)
+    y = np.array(y)
+    s = np.array(s)
+
+    exp = floor(np.log10(y[0]))
+    y /= 10.**exp
+    s /= 10.**exp
+
+    def FillChiSq(norm,alpha,beta,Eb):
+	params = {'norm': norm, 'alpha': alpha, 'Eb': Eb, 'beta': beta}
+	return np.sum(errfunc(lp,params,x,y,s)**2.)
+
+    # Set initial Fit parameters, initial step width and limits of parameters
+    if not len(kwargs['pinit']):
+	kwargs['pinit']['Eb']	= x[np.argmax(y/s)]
+	kwargs['pinit']['norm']	= prior_norm(x / kwargs['pinit']['Eb'],y)
+	kwargs['pinit']['alpha'],kwargs['pinit']['beta'] = prior_logpar(x / kwargs['pinit']['Eb'],y)
+    else:
+	kwargs['pinit']['norm'] /= 10.**exp
+    if not len(kwargs['limits']):
+	kwargs['limits']['norm'] = (kwargs['pinit']['norm'] / 1e2, kwargs['pinit']['norm'] * 1e2)
+	kwargs['limits']['alpha'] = (-10.,2.)
+	kwargs['limits']['beta'] = (-5.,5.)
+	kwargs['limits']['Eb'] = (kwargs['pinit']['Eb'] / 1e2, kwargs['pinit']['Eb'] * 1e2)
     
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = Curvature
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 3
-	fitfunc = errfunc_logpar
+    m = minuit.Minuit(FillChiSq,
+			# initial values
+			norm	= kwargs['pinit']["norm"],
+			alpha	= kwargs['pinit']["alpha"],
+			beta	= kwargs['pinit']["beta"],
+			Eb	= kwargs['pinit']["Eb"],
+			# errors
+			error_norm	= kwargs['pinit']['norm'] * kwargs['int_steps'],
+			error_alpha	= kwargs['pinit']['alpha'] * kwargs['int_steps'],
+			error_beta	= kwargs['pinit']['beta'] * kwargs['int_steps'],
+			error_Eb	= 0.,
+			# limits
+			limit_norm	= kwargs['limits']['norm'],
+			limit_alpha	= kwargs['limits']['alpha'],
+			limit_beta	= kwargs['limits']['beta'],
+			limit_Eb	= kwargs['limits']['Eb'],
+			# freeze parametrs 
+			fix_norm	= kwargs['fix']['norm'],
+			fix_alpha	= kwargs['fix']['alpha'],
+			fix_beta	= kwargs['fix']['beta'],
+			fix_Eb		= kwargs['fix']['Eb'],
+			# setup
+			print_level = kwargs['print_level'],
+			pedantic	= kwargs['pedantic'],
+			errordef	= kwargs['up'],
+			)
 
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
+    # Set initial fit control variables
+    m.tol	= kwargs['tol']
+    m.strategy	= kwargs['strategy']
 
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
+    m.migrad(ncall = kwargs['ncall'])
+    # second fit
+    m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
+    m.migrad(ncall = kwargs['ncall'])
+    logging.info("LP: Migrad minimization finished")
 
-	def FillChiSq(N0,G1,Curv):
-	    params = N0,G1,Curv
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
+    m.hesse()
+    logging.info("LP: Hesse matrix calculation finished")
 
-       # Set initial fit control variables
-	self.SetFitParams(m)
+    if full_output:
+	logging.info("LP: Running Minos for error estimation")
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.minos(k,1.)
+	logging.info("LP: Minos finished")
 
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['Curv'] = prior_logpar(x,y)
-	else:
-	    m.values['N0'],m.values['G1'],m.values['Curv'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['Curv'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Curv'] = (-2.,2.)
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
+    fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
 
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('Curv',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
+    m.values['norm'] *= 10.**exp
+    m.errors['norm'] *= 10.**exp
 
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['Curv']
-		fit_err[i] = m.errors['Curv']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Logarithmic Parabola Fit with exp. pile-up / Cut-off ------------------------------------- #
-    def MinuitFitELP(self,x,y,s,pinit=[],limits=()):
-	"""Function to fit logartithmic parabola to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = Curvature
-	pinit[3] = 1. / Cut-off or Pile Up Energy
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 4
-	fitfunc = errfunc_elogpar
+    for k in kwargs['pinit'].keys():
+	if kwargs['fix'][k]:
+	    continue
+	m.covariance['norm',k] *= 10.**exp 
+	m.covariance[k,'norm'] *= 10.**exp 
 
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
+    if full_output:
+	return fit_stat,m.values, m.errors,m.merrors, m.covariance
+    else:	
+	return fit_stat,m.values, m.errors
 
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
 
-	def FillChiSq(N0,G1,Curv,Cut):
-	    params = N0,G1,Curv,Cut
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['Curv'] = prior_logpar(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	else:
-	    m.values['N0'],m.values['G1'],m.values['Curv'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['Curv'] = limits[i]
-		if i == 3:
-		    m.limits['Cut'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Curv'] = (-2.,2.)
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('Curv',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['Curv']
-		fit_err[i] = m.errors['Curv']
-	    if i == 3:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Power Law with Exp Pile up / cut off--------------------------------------------------------- #
-    def MinuitFitEPL(self,x,y,s,pinit=[],limits=()):
-	"""Function to fit Powerlaw with super exponential pile-up / cut-off 
-	to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = 1./ break energy 
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 3
-	fitfunc = errfunc_pl
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	supexp = 5.
-	def FillChiSq(N0,G1,Cut):
-	    params = N0,G1,Cut
-	    result = 0.
-	    for i,xval in enumerate(x):
-		result += ((N0*(np.power(xval,G1))*np.exp(np.power(xval*Cut,supexp)) - y[i])\
-		    / s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'] = prior_epl_ind(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	else:
-	    m.values['N0'],m.values['G1'],m.values['Cut'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['Cut'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    #m.limits['Cut'] = (-2./(x[0]),2./(x[0]))
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	return fit_stat,pfinal,fit_err
 # - Broken Power law Fit -------------------------------------------------------------------- #
-    def MinuitFitBPL(self,x,y,s,pinit=[],limits=(),full_output = False):
-	"""Function to fit broken Powerlaw to data using minuit.migrad
+def MinuitFitBPL(x,y,s,full_output=False, **kwargs):
+    """
+    Function to fit Broken Power Law with smooth transition to data using minuit.migrad
+
+    y(x) = p['Prefactor'] * ( x / p['Scale'] ) ** p['Index1'] * ( 1. + x * p['BreakValue'] ** p['Smooth'] ) ** ((p['Index2'] - p['Index1']) / p['Smooth'])
+
+    Parameters
+    ----------
+    x:	n-dim array containing the measured x values
+    y:	n-dim array containing the measured y values, i.e. y = y(x)
+    s:  n-dim array with (symmetric) measurment uncertainties on y
+
+    kwargs
+    ------
+    full_output:	bool, if True, errors will be estimated additionally with minos, covariance matrix will also be returned
+    print_level:	0,1, level of verbosity, defualt = 0 means nothing is printed
+    int_steps:		float, initial step width, multiply with initial values of errors, default = 0.1
+    strategy:		0 = fast, 1 = default (default), 2 = thorough
+    tol:		float, required tolerance of fit = 0.001*tol*UP, default = 1.
+    up			float, errordef, 1 (default) for chi^2, 0.5 for log-likelihood
+    ncall		int, number of maximum calls, default = 1000
+    pedantic		bool, if true (default), give all warnings
+    limits		dictionary containing 2-tuple for all fit parameters
+    pinit		dictionary with initial fit for all fir parameters
+    fix			dictionary with booleans if parameter is frozen for all fit parameters
+
+    Returns
+    -------
+    tuple containing
+    	0. list of Fit Stats: ChiSq, Dof, P-value
+    	1. dictionary with final fit parameters
+    	2. dictionary with 1 Sigma errors of final fit parameters
+    if full_output = True:
+	3. dictionary with +/- 1 Sigma Minos errors
+	4. dictionary with covariance matrix
+
+    Notes
+    -----
+    iminuit documentation: http://iminuit.github.io/iminuit/index.html
+    """
+# --- Set the defaults
+    kwargs.setdefault('print_level',0)		# no output
+    kwargs.setdefault('int_steps',0.1)		# Initial step width, multiply with initial values in m.errors
+    kwargs.setdefault('strategy',1)		# 0 = fast, 1 = default, 2 = thorough
+    kwargs.setdefault('tol',1.)			# Tolerance of fit = 0.001*tol*UP
+    kwargs.setdefault('up',1.)			# 1 for chi^2, 0.5 for log-likelihood
+    kwargs.setdefault('ncall',1000.)		# number of maximum calls
+    kwargs.setdefault('pedantic',True)		# Give all warnings
+    kwargs.setdefault('limits',{})
+    kwargs.setdefault('pinit',{})
+    kwargs.setdefault('fix',{'Index1': False ,'Index2': False , 'Smooth': True, 'BreakValue': False, 'Prefactor': False, 'Scale' : True})	
+# --------------------
+	
+    npar = 4
+
+    if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
+	raise TypeError("Lists must have same length!")
+    if not len(x) > npar:
+	print "Not sufficient number of data points => Returning -1"
+	return -1
+
+    x = np.array(x)
+    y = np.array(y)
+    s = np.array(s)
+
+    exp = floor(np.log10(y[0]))
+    y /= 10.**exp
+    s /= 10.**exp
+
+    def FillChiSq(Prefactor,Index1,Index2,BreakValue,Smooth,Scale):
+	params = {'Prefactor': Prefactor, 'Index1': Index1, 'Index2': Index2, 'BreakValue': BreakValue, 'Smooth': Smooth, 'Scale': Scale}
+	return np.sum(errfunc(bpl,params,x,y,s)**2.)
+
+    # Set initial Fit parameters, initial step width and limits of parameters
+    if not len(kwargs['pinit']):
+	kwargs['pinit']['Scale']	= x[np.argmax(y/s)]
+	kwargs['pinit']['Prefactor']	= prior_norm(x / kwargs['pinit']['Scale'],y)
+	kwargs['pinit']['Index1'],kwargs['pinit']['Index2'],kwargs['pinit']['BreakValue']	= prior_bpl(x / kwargs['pinit']['Scale'],y)
+	kwargs['pinit']['Smooth']	= 4.
+    else:
+	kwargs['pinit']['Prefactor'] /= 10.**exp
+    if not len(kwargs['limits']):
+	kwargs['limits']['Prefactor'] = (kwargs['pinit']['Prefactor'] / 1e2, kwargs['pinit']['Prefactor'] * 1e2)
+	kwargs['limits']['Index1'] = (-10.,2.)
+	kwargs['limits']['Index2'] = (-10.,2.)
+	kwargs['limits']['BreakValue'] = (kwargs['pinit']['Scale'] / x[-1] , kwargs['pinit']['Scale'] / x[0]  )
+	kwargs['limits']['Scale'] = (kwargs['pinit']['Scale'] / 1e2, kwargs['pinit']['Scale'] * 1e2)
+	kwargs['limits']['Smooth'] = (0.5,10.)
     
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = 2nd pl index
-	pinit[3] = 1./ break energy 
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 4
-	fitfunc = errfunc_bpl
 
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,Bre):
-	    params = N0,G1,G2,Bre
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['Bre'] = prior_bpl(x,y)
-	else:
-	    m.values['N0'],m.values['G1'],m.values['G2'],m.values['Bre'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['Bre'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:
-	    return fit_stat,pfinal,fit_err
-# - Broken Power law with exp. pile up / cut-off--------------------------------------------- #
-    def MinuitFitEBPL(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit broken Powerlaw to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = 2nd pl index
-	pinit[3] = 1./ break energy 
-	pinit[4] = 1./ pile-up/cut-off energy 
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 5
-	fitfunc = errfunc_ebpl
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,Bre,Cut):
-	    params = N0,G1,G2,Bre,Cut
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['Bre'] = prior_bpl(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	else:
-	    m.values['N0'],m.values['G1'],m.values['G2'],m.values['Bre'],m.values['Cut'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['Bre'] = limits[i]
-		if i == 4:
-		    m.limits['Cut'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	    if i == 4:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Broken Power law with exp. pile up / cut-off that is not fixed but fitted --------------- #
-    def MinuitFitEBPL_FS(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit broken Powerlaw to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = 2nd pl index
-	pinit[3] = 1./ break energy 
-	pinit[4] = 1./ pile-up/cut-off energy 
-	pinit[5] = sup exp pile up parameter >= 1
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 6
-	fitfunc = errfunc_sebpl_fs
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,Bre,Cut,SupExp):
-	    params = N0,G1,G2,Bre,Cut,SupExp
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['Bre'] = prior_bpl(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	    m.values['SupExp'] = 2.
-	else:
-	    m.values['N0'],m.values['G1'],m.values['G2'],m.values['Bre'],\
-		m.values['Cut'],m.values['SupExp'] = pinit
-	    if m.values['SupExp'] < 1.:
-		m.values['SupExp'] = 2.
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['Bre'] = limits[i]
-		if i == 4:
-		    m.limits['Cut'] = limits[i]
-		if i == 4:
-		    m.limits['SupExp'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['SupExp'] = (self.FitParams['SupExpLoLim'],self.FitParams['SupExpUpLim'])
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	#m.fixed['SupExp'] = True
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	    if i == 4:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	    if i == 5:
-		pfinal[i] = m.values['SupExp']
-		fit_err[i] = m.errors['SupExp']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Double Broken Power Law ------------------------------------------------------------------- #
-    def MinuitFitDBPL(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit Powerlaw with super exponential pile-up / cut-off 
-	to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = pl index 2
-	pinit[3] = pl index 3
-	pinit[4] = 1./ break energy
-	pinit[5] = 1./ break energy 2 
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 6
-	fitfunc = errfunc_dbpl
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,G3,Bre,Bre2):
-	    params = N0,G1,G2,G3,Bre,Bre2
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['G3'],m.values['Bre'],m.values['Bre2'] \
-		= prior_dbpl(x,y)
-	else:
-	    m.values['N0'],m.values['G1'], m.values['G2'],\
-	    m.values['G3'],m.values['Bre'],m.values['Bre2'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['G3'] = limits[i]
-		if i == 4:
-		    m.limits['Bre'] = limits[i]
-		if i == 5:
-		    m.limits['Bre2'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G3'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['Bre2'] = (1./(2.*x[-1]),2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-		m.minos('G3',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['G3']
-		fit_err[i] = m.errors['G3']
-	    if i == 4:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	    if i == 5:
-		pfinal[i] = m.values['Bre2']
-		fit_err[i] = m.errors['Bre2']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Double Broken Power Law with super exponential cut-off / pile-up -------------------------- #
-    def MinuitFitEDBPL(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit double broken Powerlaw with super exponential pile-up / cut-off 
-	to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = pl index 2
-	pinit[3] = pl index 3
-	pinit[4] = 1./ break energy
-	pinit[5] = 1./ break energy 2 
-	pinit[6] = 1./ cut-off / pile-up 2 
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 7
-	fitfunc = errfunc_edbpl
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,G3,Bre,Bre2,Cut):
-	    params = N0,G1,G2,G3,Bre,Bre2,Cut
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['G3'],m.values['Bre'],m.values['Bre2'] \
-		= prior_dbpl(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	else:
-	    m.values['N0'],m.values['G1'], m.values['G2'],\
-	    m.values['G3'],m.values['Bre'],m.values['Bre2'],m.values['Cut'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['G3'] = limits[i]
-		if i == 4:
-		    m.limits['Bre'] = limits[i]
-		if i == 5:
-		    m.limits['Bre2'] = limits[i]
-		if i == 6:
-		    m.limits['Cut'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G3'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['Bre2'] = (1./(2.*x[-1]),2./(x[0]))
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-		m.minos('G3',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['G3']
-		fit_err[i] = m.errors['G3']
-	    if i == 4:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	    if i == 5:
-		pfinal[i] = m.values['Bre2']
-		fit_err[i] = m.errors['Bre2']
-	    if i == 6:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Double Broken Power Law with super exponential cut-off / pile-up and free Sup Exp parameter #
-    def MinuitFitEDBPL_FS(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function to fit double broken Powerlaw with super exponential pile-up / cut-off 
-	to data using minuit.migrad
-    
-	pinit[0] = norm
-	pinit[1] = pl index
-	pinit[2] = pl index 2
-	pinit[3] = pl index 3
-	pinit[4] = 1./ break energy
-	pinit[5] = 1./ break energy 2 
-	pinit[6] = 1./ cut-off / pile-up 2 
-	pinit[7] = Super exponential parameter
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 8
-	fitfunc = errfunc_edbpl_fs
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(N0,G1,G2,G3,Bre,Bre2,Cut,SupExp):
-	    params = N0,G1,G2,G3,Bre,Bre2,Cut,SupExp
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['N0'] = prior_norm(x,y)
-	    m.values['G1'], m.values['G2'],m.values['G3'],m.values['Bre'],m.values['Bre2'] \
-		= prior_dbpl(x,y)
-	    m.values['Cut'] = prior_epl_cut(x,y)
-	    m.values['SupExp'] = 2.5
-	else:
-	    m.values['N0'],m.values['G1'], m.values['G2'],\
-	    m.values['G3'],m.values['Bre'],m.values['Bre2'],\
-	    m.values['Cut'],m.values['SupExp'] = pinit
-	    if m.values['SupExp'] < 1.:
-		m.values['SupExp'] = 2.5
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['N0'] = limits[i]
-		if i == 1:
-		    m.limits['G1'] = limits[i]
-		if i == 2:
-		    m.limits['G2'] = limits[i]
-		if i == 3:
-		    m.limits['G3'] = limits[i]
-		if i == 4:
-		    m.limits['Bre'] = limits[i]
-		if i == 5:
-		    m.limits['Bre2'] = limits[i]
-		if i == 6:
-		    m.limits['Cut'] = limits[i]
-		if i == 7:
-		    m.limits['SupExp'] = limits[i]
-	else:
-	    m.limits['G1'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G2'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['G3'] = (self.FitParams['SpecIndLoLim'],self.FitParams['SpecIndUpLim'])
-	    m.limits['Bre'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['Bre2'] = (1./(2.*x[-1]),2./(x[0]))
-	    #m.limits['Cut'] = (0.,2./(x[0]))
-	    m.limits['Cut'] = (1./(2.*x[-1]),2./(x[0]))
-	    m.limits['SupExp'] = (self.FitParams['SupExpLoLim'],self.FitParams['SupExpUpLim'])
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	#m.fixed['SupExp'] = True
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('G1',1.)
-		m.minos('G2',1.)
-		m.minos('G3',1.)
-		m.minos('Cut',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['N0']
-		fit_err[i] = m.errors['N0']
-	    if i == 1:
-		pfinal[i] = m.values['G1']
-		fit_err[i] = m.errors['G1']
-	    if i == 2:
-		pfinal[i] = m.values['G2']
-		fit_err[i] = m.errors['G2']
-	    if i == 3:
-		pfinal[i] = m.values['G3']
-		fit_err[i] = m.errors['G3']
-	    if i == 4:
-		pfinal[i] = m.values['Bre']
-		fit_err[i] = m.errors['Bre']
-	    if i == 5:
-		pfinal[i] = m.values['Bre2']
-		fit_err[i] = m.errors['Bre2']
-	    if i == 6:
-		pfinal[i] = m.values['Cut']
-		fit_err[i] = m.errors['Cut']
-	    if i == 7:
-		pfinal[i] = m.values['SupExp']
-		fit_err[i] = m.errors['SupExp']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Fit Function provided by Fermi tools to optical depth ------------------------------------- #
-    def MinuitFitTau_Fermi(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function fitted to optical depth
-	Function given by Fermi tools:
-	tau(E) = (E - Eb) * p0 + p1 * ln(E/Eb) + p2* ln(E/Eb)**2
-	Energies in MeV
-    
-	pinit[0] = Eb
-	pinit[1] = p0
-	pinit[2] = p1
-	pinit[2] = p2
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 4
-	fitfunc = errfunc_tau_fermi
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(Eb,p0,p1,p2):
-	    params = Eb,p0,p1,p2
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['Eb'] = 1e4	# Eb is 10 GeV
-	    m.values['p0'] = 0.
-	    m.values['p1'] = 1.
-	    m.values['p2'] = 0.5
-	else:
-	    m.values['Eb'],m.values['p0'], m.values['p1'],\
-	    m.values['p2'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['Eb'] = limits[i]
-		if i == 1:
-		    m.limits['p0'] = limits[i]
-		if i == 2:
-		    m.limits['p1'] = limits[i]
-		if i == 3:
-		    m.limits['p2'] = limits[i]
-	else:
-	    m.limits['Eb'] = (0.001,0.05)
-	    m.limits['p0'] = (-10.,10.)
-	    m.limits['p1'] = (-10.,10.)
-	    m.limits['p2'] = (-10.,10.)
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	#m.fixed['SupExp'] = True
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('Eb',1.)
-		m.minos('p0',1.)
-		m.minos('p1',1.)
-		m.minos('p2',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['Eb']
-		fit_err[i] = m.errors['Eb']
-	    if i == 1:
-		pfinal[i] = m.values['p0']
-		fit_err[i] = m.errors['p0']
-	    if i == 2:
-		pfinal[i] = m.values['p1']
-		fit_err[i] = m.errors['p1']
-	    if i == 3:
-		pfinal[i] = m.values['p2']
-		fit_err[i] = m.errors['p2']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Fit Function provided by Fermi tools to optical depth with fixed Eb ----------------------- #
-    def MinuitFitTau_Fermi_Eb(self,x,y,s,pinit=[],limits=(),full_output=False):
-	"""Function fitted to optical depth
-	Function given by Fermi tools:
-	tau(E) = (E - Eb) * p0 + p1 * ln(E/Eb) + p2* ln(E/Eb)**2
-	Energies in MeV
-    
-	pinit[0] = p0
-	pinit[1] = p1
-	pinit[2] = p2
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 3
-	fitfunc = errfunc_tau_fermi_Eb
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(p0,p1,p2):
-	    params = p0,p1,p2
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['p0'] = 0.
-	    m.values['p1'] = 1.
-	    m.values['p2'] = 0.5
-	else:
-	    m.values['p0'], m.values['p1'], m.values['p2'] = pinit
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['p0'] = limits[i]
-		if i == 1:
-		    m.limits['p1'] = limits[i]
-		if i == 2:
-		    m.limits['p2'] = limits[i]
-	else:
-	    m.limits['p0'] = (-3.e-1,10.)	# set them all positive, so that no upturn in spectra possible
-	    m.limits['p1'] = (-3.e-1,10.)
-	    m.limits['p2'] = (-3.e-1,10.)
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	#m.fixed['SupExp'] = True
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('p0',1.)
-		m.minos('p1',1.)
-		m.minos('p2',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['p0']
-		fit_err[i] = m.errors['p0']
-	    if i == 1:
-		pfinal[i] = m.values['p1']
-		fit_err[i] = m.errors['p1']
-	    if i == 2:
-		pfinal[i] = m.values['p2']
-		fit_err[i] = m.errors['p2']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# - Fit Function to fit supernova type II optical light curve --------------------------------- #
-    def MinuitFitSN(self,x,y,s,pinit=[],limits=(),fixed=[], full_output=False):
-	"""Function to fit super nova type II lightcurve
-	according to Cowen et al. 2009, Eq. (1) + Eq. (2)
-    
-	pinit[0] = a1
-	pinit[1] = a2
-	pinit[2] = a3
-	pinit[3] = t0
-
-	returns 3 lists:
-	1. Fit Stats: ChiSq, Dof, P-value
-	2. Final fit parameters
-	3. 1 Sigma errors of Final Fit parameters
-	"""
-	npar = 4
-	fitfunc = errfunc_sn
-
-	if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
-	    raise TypeError("Lists must have same length!")
-	if not len(x) > npar:
-	    print "Not sufficient number of data points => Returning -1"
-	    return -1
-
-	x = np.array(x)
-	y = np.array(y)
-	s = np.array(s)
-
-	def FillChiSq(p0,p1,p2,t0):
-	    params = p0,p1,p2,t0
-	    result = 0.
-	    for i,xval in enumerate(x):
-	        result += fitfunc(params,xval,y[i],s[i])**2.
-	    return result
-	m = minuit.Minuit(FillChiSq)
-
-       # Set initial fit control variables
-	self.SetFitParams(m)
-
-       # Set initial Fit parameters, initial step width and limits of parameters
-	if not len(pinit):
-	    m.values['p0'] = 1.
-	    m.values['p1'] = 1.
-	    m.values['p2'] = 1.
-	    m.values['t0'] = 1.
-	else:
-	    m.values['p0'], m.values['p1'], m.values['p2'],m.values['t0'] = pinit
-
-	if not len(fixed):		# fix certain parameters?
-	    m.fixed['p0'] = False
-	    m.fixed['p1'] = False
-	    m.fixed['p2'] = False
-	    m.fixed['t0'] = False
-	else:
-	    m.fixed['p0'], m.fixed['p1'], m.fixed['p2'],m.fixed['t0'] = fixed
-
-	if len(limits):
-	    for i in range(len(limits)):
-		if i == 0:
-		    m.limits['p0'] = limits[i]
-		if i == 1:
-		    m.limits['p1'] = limits[i]
-		if i == 2:
-		    m.limits['p2'] = limits[i]
-		if i == 3:
-		    m.limits['t0'] = limits[i]
-	else:
-	    m.limits['p0'] = (-1.e-10,1e10)
-	    m.limits['p1'] = (-1.e-10,1e10)
-	    m.limits['p2'] = (-1.e-10,1e10)
-	    m.limits['t0'] = (1.e-10,1e10)
-	for val in m.errors:
-	    m.errors[val] = m.values[val] * self.FitParams['int_steps']
-
-	pfinal = np.zeros((npar,))
-	fit_err = np.zeros((npar,))
-	try:
-	    m.migrad()
-	    m.hesse()
-	    if self.minos and pvalue(float(len(x) - npar), m.fval) >= 0.05:
-		m.minos('p0',1.)
-		m.minos('p1',1.)
-		m.minos('p2',1.)
-		m.minos('t0',1.)
-	except minuit.MinuitError:
-            warnings.simplefilter("always")
-            warnings.warn('Minuit could not fit function!',RuntimeWarning)
-	    if full_output:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err,m.covariance
-	    else:
-		return (np.inf,float(npar),np.inf),pfinal,fit_err
-
-	fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
-	for i,val in enumerate(m.values):
-	    if i == 0:
-		pfinal[i] = m.values['p0']
-		fit_err[i] = m.errors['p0']
-	    if i == 1:
-		pfinal[i] = m.values['p1']
-		fit_err[i] = m.errors['p1']
-	    if i == 2:
-		pfinal[i] = m.values['p2']
-		fit_err[i] = m.errors['p2']
-	    if i == 3:
-		pfinal[i] = m.values['t0']
-		fit_err[i] = m.errors['t0']
-	if full_output:
-	    return fit_stat,pfinal,fit_err,m.covariance
-	else:	
-	    return fit_stat,pfinal,fit_err
-# -- Careful Fit Routine ---------------------------------------------------------------------- #
-    def MinuitCarefulFit(self,x,y,s,init_func=0,max_func=4,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1,pbound = 0.05):
-	"""
-	Careful Fitting with Minuit:
-	Fit data pointwise, if fit becomes bad (p < 0.05) try function with more parameters,
-	up to the function with index max_func, starting with Index init_func. 
-	Indices are:
-	    0 MinuitFitPL
-	    1 MinuitFitBPL
-	    2 MinuitFitDBPL
-	    3 MinuitFitEBPL
-	    4 MinuitFitEDBPL
-	"""
-	if n_end < 0:
-	    n_end = len(x) + 1
-	#pfinal = pinit
-	pfinal = []
-	ifunc = init_func
-
-	fitfunc = self.MinuitFitPL,\
-		  self.MinuitFitBPL,\
-		  self.MinuitFitDBPL,\
-		  self.MinuitFitEBPL,\
-		  self.MinuitFitEDBPL
-	for n in range(n_start, n_end,n_step):
-	    x_s = x[0:n]
-	    fit_stat,pfinal,fit_err = fitfunc[ifunc](
-		x_s,y[0:n]*x_s**2.,s[0:n]*x_s**2.,
-		pinit = pfinal
-		)
-	    if fit_stat[2] <= pbound and ifunc < max_func:
-		ifunc += 1
-		if ifunc == 1:
-		    pinit = pfinal
-		    pfinal = np.zeros((4,))
-		    pfinal[0], pfinal[1] = pinit
-		    pfinal[-1] = 1./x[n-1]
-		    if n >= len(x):
-			pfinal[2] = (np.log(y[-2]) - np.log(y[-1])) \
-			    / (np.log(x[-2]) - np.log(x[-1]))
-		    else:
-			pfinal[2] = (np.log(y[n-1]) - np.log(y[n+1])) \
-			    / (np.log(x[n-1]) - np.log(x[n+1]))
-		if ifunc == 2:
-		    pinit_bpl = pfinal
-		    pfinal = np.zeros((6,))
-		    pfinal[0:3],pfinal[4] = pinit_bpl[0:3],pinit_bpl[3]
-		    pfinal[-1] = 1./x[n-1]
-		    if n >= len(x):
-			pfinal[3] = (np.log(y[-2]) - np.log(y[-1])) \
-			    / (np.log(x[-2]) - np.log(x[-1]))
-		    else:
-			pfinal[3] = (np.log(y[n-1]) - np.log(y[n+1])) \
-			    / (np.log(x[n-1]) - np.log(x[n+1]))
-		if ifunc == 3:
-		    pinit_dbpl = pfinal
-		    pfinal = np.zeros((5,))
-		    pfinal[0:4] = pinit_bpl
-		    if n >= len(x):
-			pfinal[4] = 1./x[-1]
-		    else:
-			pfinal[4] = 1./x[n]
-		if ifunc == 4:
-		    pinit = pfinal
-		    pfinal = np.zeros((7,))
-		    pfinal[0:6] = pinit_dbpl
-		    if n >= len(x):
-			pfinal[6] = 1./x[-1]
-		    else:
-			pfinal[6] = 1./x[n]
-
-		fit_stat,pfinal,fit_err= fitfunc[ifunc](
-		    x_s,y[0:n]*x_s**2.,s[0:n]*x_s**2.,
-		    pinit = pfinal
-		    )
-	# Convert ifunc to iloop
-	if ifunc:
-	    if ifunc == 1:
-		iloop = 2
-	    elif ifunc == 2:
-		iloop = 3
-	    elif ifunc == 3:
-		iloop = 6
-	    elif ifunc == 4:
-		iloop = 7
-	    else:
-		iloop = ifunc
-	return fit_stat,pfinal,fit_err,iloop,ifunc
-# -- Careful Fit Routines ---------------------------------------------------------------------- #
-    def MinuitCarefulFitPL(self,x,y,s,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1):
-	return MinuitCarefulFit(self,x,y,s,0,0,pinit,limits,
-	n_start, n_end, n_step)
-
-    def MinuitCarefulFitBPL(self,x,y,s,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1):
-	return MinuitCarefulFit(self,x,y,s,0,1,pinit,limits,
-	n_start, n_end, n_step)
-
-    def MinuitCarefulFitEBPL(self,x,y,s,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1):
-	return MinuitCarefulFit(self,x,y,s,0,2,pinit,limits,
-	n_start, n_end, n_step)
-
-    def MinuitCarefulFitDBPL(self,x,y,s,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1):
-	return MinuitCarefulFit(self,x,y,s,0,3,pinit,limits,
-	n_start, n_end, n_step)
-
-    def MinuitCarefulFitDEBPL(self,x,y,s,pinit=[],limits=(),
-    n_start = 3, n_end = -1, n_step = 1):
-	return MinuitCarefulFit(self,x,y,s,0,4,pinit,limits,
-	n_start, n_end, n_step)
+    m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],
+			# initial values
+			Prefactor	= kwargs['pinit']["Prefactor"],
+			Index1		= kwargs['pinit']["Index1"],
+			Index2		= kwargs['pinit']["Index2"],
+			BreakValue	= kwargs['pinit']["BreakValue"],
+			Scale		= kwargs['pinit']["Scale"],
+			Smooth		= kwargs['pinit']["Smooth"],
+			# errors
+			error_Prefactor	= kwargs['pinit']['Prefactor'] * kwargs['int_steps'],
+			error_Index1	= kwargs['pinit']['Index1'] * kwargs['int_steps'],
+			error_Index2	= kwargs['pinit']['Index2'] * kwargs['int_steps'],
+			error_BreakValue= kwargs['pinit']['BreakValue'] * kwargs['int_steps'],
+			error_Scale	= 0.,
+			error_Smooth	= 0.,
+			# limits
+			limit_Prefactor = kwargs['limits']['Prefactor'],
+			limit_Index1	= kwargs['limits']['Index1'],
+			limit_Index2	= kwargs['limits']['Index2'],
+			limit_BreakValue= kwargs['limits']['BreakValue'],
+			limit_Scale	= kwargs['limits']['Scale'],
+			limit_Smooth	= kwargs['limits']['Smooth'],
+			# freeze parametrs 
+			fix_Prefactor	= kwargs['fix']['Prefactor'],
+			fix_Index1	= kwargs['fix']['Index1'],
+			fix_Index2	= kwargs['fix']['Index2'],
+			fix_BreakValue	= kwargs['fix']['BreakValue'],
+			fix_Scale	= kwargs['fix']['Scale'],
+			fix_Smooth	= kwargs['fix']['Smooth'],
+			# setup
+			pedantic	= kwargs['pedantic'],
+			errordef	= kwargs['up']
+			)
+
+    # Set initial fit control variables
+    m.tol	= kwargs['tol']
+    m.strategy	= kwargs['strategy']
+
+    m.migrad(ncall = kwargs['ncall'])
+    # second fit
+    m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
+    m.migrad(ncall = kwargs['ncall'])
+    logging.info("BPL: Migrad minimization finished")
+
+    m.hesse()
+    logging.info("BPL: Hesse matrix calculation finished")
+
+    if full_output:
+	logging.info("BPL: Running Minos for error estimation")
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.minos(k,1.)
+	logging.info("BPL: Minos finished")
+
+    fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
+
+    m.values['Prefactor'] *= 10.**exp
+    m.errors['Prefactor'] *= 10.**exp
+
+    for k in kwargs['pinit'].keys():
+	if kwargs['fix'][k]:
+	    continue
+	m.covariance[k,'Prefactor'] *= 10.**exp 
+	m.covariance['Prefactor',k] *= 10.**exp 
+
+
+    if full_output:
+	return fit_stat,m.values, m.errors,m.merrors, m.covariance
+    else:	
+	return fit_stat,m.values, m.errors
