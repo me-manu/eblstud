@@ -1,0 +1,296 @@
+"""
+This module contains functions to compute the Kolmogorov-Smirnov test
+for two distributions.
+
+History if changes:
+Version 1.0
+- Created (11/19/2010)
+
+"""
+
+__version__ = 1.0
+__author__ = "M. Meyer // manuel.meyer@physik.uni-hamburg.de"
+
+import numpy as np
+
+def cdf(list) :
+    """Computes the CDF of a list and returns a sorted np array with tuples x, CDF(x)
+
+    """
+    for i,l in enumerate(list):
+	list[i] = float(l)
+    list.sort()
+    result = np.array([np.zeros(len(list)),np.zeros(len(list))])
+    for i,l in enumerate(list):
+	result[0][i] = l
+	result[1][i] = (float(i) + 1.) / float(len(list))
+    return result
+
+def find_best(list, value):
+    """Finds the value in list which is closest to but below value and returns it,
+    Note that list must be a sorted list in ascending order"""
+
+    if len(list) < 2:
+	return list[0]
+    elif len(list) < 3:
+	if value >= list[1] and value > list[0]:
+	    return list[1]
+	else:
+	    return list[0]
+    min = 0
+    max = len(list) - 1
+    mid = len(list)/2
+    if list[mid] > value:
+	max = mid
+    elif list[mid] < value:
+	min = mid
+    else:
+	return list[mid]
+    return find_best(list[min:max+1],value)
+
+def KSdist(z):
+    """Computes the p value Q_KS of the Kolmogorov-Smirnov Test.
+    See Numerical Recipes Third Ed. Eq. 6.14.56/57 on p. 334
+
+    """
+    if z < 0.:
+	raise ValueError("bad z in KSdist!")
+    if z == 0.:
+	return 0.
+    if z < 1.18:
+	y = np.exp(-1.23370055013616983/(z*z))
+	result = 2.25675833419102515*np.sqrt(-np.log(y))
+	result *= (y + np.power(y,9.) + np.power(y,25.) + np.power(y,49.))
+	return (1. - result)
+    else:
+	x = np.exp(-2.*z*z)
+	return (2.*(x - np.power(x,4.) + np.power(x,9.)))
+
+def KStest(l1, l2, gnuplot = False):
+    """ Evaluate the Kolmogorov-Smirnov Test for two sets of data points l1 and l2.
+    Function returns maximal Distance between the CDFs and the corresponding Q_KS value
+
+    """
+    mini= float(min(min(l1),min(l2)))
+    maxi= float(max(max(l1),max(l2)))
+    cdf1 = cdf(l1)
+    cdf2 = cdf(l2)
+    D = 0.
+    i = mini
+
+    if gnuplot:
+	f = open('KS_test.dat','w')
+	f1 = open('KS_candle.dat','w')
+	f2 = open('KS_candle2.dat','w')
+
+    while i < maxi + 1:
+	ind1 = l1.index(find_best(cdf1[0][:,],i))
+	ind2 = l2.index(find_best(cdf2[0][:,],i))
+	diff = np.abs(cdf1[1][ind1] - cdf2[1][ind2])
+
+	if gnuplot:
+	    f.write('%.4e\t%.4e\t%.4e\t%.4e\n' % (find_best(cdf1[0][:,],i),cdf1[1][ind1],find_best(cdf2[0][:,],i),cdf2[1][ind2]))
+	    f1.write('%.4e\t%f\t%f\t%f\t%f\n' % (find_best(cdf1[0][:,],i),0.,0.,0.1,0.))
+	    f2.write('%.4e\t%f\t%f\t%f\t%f\n' % (find_best(cdf2[0][:,],i),0.,0.,0.11,0.))
+
+	if diff > D:
+	    D = diff
+	i += 0.1*np.abs(mini)
+
+	if gnuplot:
+	    f.write('%.4e\t%.4e\t%.4e\t%.4e\n' % (2*maxi,0,2*maxi,0))
+	    f.close()
+	    f1.close()
+	    f2.close()
+
+    Neff = float(len(l1))*float(len(l2)) / float( len(l1) + len(l2))
+    return D, KSdist( (np.sqrt(Neff) + 0.12 + 0.11/np.sqrt(Neff)) * D )
+
+def KStest2(l1, func, gnuplot = False):
+    """ Evaluate the Kolmogorov-Smirnov Test between the data set l1 and the CDF func,
+    where func = CDF(x), where CDF(max(l1)) = 1 and CDF(min(l1)) = 0.
+    Function returns maximal Distance between the CDFs and the corresponding Q_KS value.
+
+    """
+    mini= float(min(l1))
+    maxi= float(max(l1))
+    if func(maxi) > 1. or func(mini) < 0.:
+	raise ValueError("The CDF is not normed!")
+    cdf1= cdf(l1)
+    D = 0.
+
+    if gnuplot:
+	f = open('KS_test.dat','w')
+	f1 = open('KS_candle.dat','w')
+
+    for i,l in enumerate([x for x in cdf1[0][:,]]):
+	diff = np.abs(cdf1[1][i] - func(l))
+	if gnuplot:
+	    f.write('%.4e\t%.4e\t%.4e\t%.4e\n' % (find_best(cdf1[0][:,],i),cdf1[1][ind1],func(l)))
+	    f1.write('%.4e\t%f\t%f\t%f\t%f\n' % (find_best(cdf1[0][:,],i),0.,0.,0.1,0.))
+
+	if diff > D:
+	    D = diff
+
+    if gnuplot:
+	f.write('%.4e\t%.4e\t%.4e\t%.4e\n' % (2*maxi,0,2*maxi,0))
+	f.close()
+	f1.close()
+
+    Neff = len(l1)
+    return D, KSdist( (np.sqrt(Neff) + 0.12 + 0.11/np.sqrt(Neff)) * D )
+
+def plot_ks(lists,limit,strings,annotation=None,output='KS_Test.png',title=None,deabs = False, infos = False):
+    """Function that plots tau vs f_obs / f_deabs and the CDFs
+
+    """
+    import matplotlib.pyplot as plt 
+    import pylab
+    if len(lists) == 6:
+	ks1, ks2, all_t_obs, all_r_obs, all_t_deabs, all_r_deabs= lists
+    elif len(lists) == 4:
+	ks1, ks2, t_no, t_yes= lists
+    else:
+	raise TypeError('Unsopperted number of lists!')
+    label1, label2, label3, label4 = strings
+
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(2, 1, 1)
+    #if title:
+	#plt.title(title, fontsize=16, weight = 'bold')
+    #ax.set_xscale("log", nonposx='clip')
+    #plt.ylabel(r'Flux Ratio $\frac{f_\mathrm{obs} - f_\mathrm{ext}}{f_\mathrm{obs} + f_\mathrm{ext}}$',fontsize=14)
+    if len(lists) == 6:
+	if infos:
+	    t_obs = []
+	    for j,i in enumerate(all_t_obs):
+		t_obs.append(i[0])
+		text = "%s\nE = %.2f TeV\nz = %.3f" % (i[3],i[1],i[2])
+		plt.text(all_r_obs[j]+0.0005,i[0],text,fontsize = 5,va='center')
+	    plt.plot(all_r_obs,t_obs,marker='d',color='b',linestyle='None', label=label1)
+	    t_deabs = []
+	    for j,i in enumerate(all_t_deabs):
+		t_deabs.append(i[0])
+		text = "%s\nE = %.2f TeV\nz = %.3f" % (i[3],i[1],i[2])
+		plt.text(all_r_deabs[j]+0.0005,i[0],text,fontsize = 5,va='center')
+	    plt.plot(all_r_deabs,t_deabs,marker='o',color='r',linestyle='None', label=label2)
+	    plt.axhspan(ymin = limit, ymax = max(max(t_deabs),max(t_obs))+0.5, color='#ccccff')
+	else:
+	    plt.plot(all_r_obs,all_t_obs,marker='d',color='b',linestyle='None', label=label1)
+	    plt.plot(all_r_deabs,all_t_deabs,marker='o',color='r',linestyle='None', label=label2)
+	    plt.axhspan(ymin = limit, ymax = max(max(all_t_deabs),max(all_t_obs))+0.5, color='#ccccff')
+    elif len(lists) == 4:
+	plt.plot(ks1,t_no,marker='d',color='b',linestyle='None', label=label1)
+	plt.plot(ks2,t_yes,marker='o',color='r',linestyle='None', label=label2)
+	plt.axhspan(ymin = limit, ymax = max(max(t_yes),max(t_no))+0.5, color='#ccccff')
+    #plt.axvspan(xmin = limit, xmax = 10., alpha=0.2 )
+
+    import matplotlib.ticker as ticker
+
+    formatter = ticker.FormatStrFormatter('%1.1f')
+    ax.yaxis.set_major_formatter(formatter)
+
+    for label in ax.xaxis.get_ticklabels():
+	label.set_fontsize(12)
+    for label in ax.yaxis.get_ticklabels():
+	label.set_fontsize(12)
+    for line in ax.xaxis.get_ticklines():
+	line.set_markersize(8)
+	line.set_markeredgewidth(1.5)
+    for line in ax.xaxis.get_minorticklines():
+	line.set_markersize(5)
+	line.set_markeredgewidth(1.5)
+    for line in ax.yaxis.get_ticklines():
+	line.set_markersize(8)
+	line.set_markeredgewidth(1.5)
+    for tick in ax.xaxis.get_major_ticks():
+	tick.label1On = False
+	tick.label2On = True
+    for line in ax.yaxis.get_minorticklines():
+	line.set_markersize(5)
+	line.set_markeredgewidth(1.5)
+
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(.1))
+    ax.yaxis.set_minor_locator(ticker.MultipleLocator(.1))
+
+    #fig.subplots_adjust(hspace=0.3)
+    if len(lists) == 6:
+	plt.legend(loc=2,numpoints=1,prop={'size':12})
+	if infos:
+	    plt.axis([min(min(all_r_obs),min(all_r_deabs))-0.01, max(max(all_r_deabs),max(all_r_obs))+0.01, 0., max(max(t_obs),max(t_deabs)) +0.1])
+#	else:
+#	    plt.axis([min(min(all_r_obs),min(all_r_deabs))-0.01, max(max(all_r_deabs),max(all_r_obs))+0.01, 0., max(max(all_t_obs),max(all_t_deabs)) +0.1])
+#    elif len(lists) == 4:
+#	plt.legend(loc=2,numpoints=1,prop={'size':12})
+#	plt.axis([min(min(ks1),min(ks2))-0.01, max(max(ks1),max(ks2))+0.01, 0., max(max(t_no),max(t_yes)) +0.1])
+    #if len(lists) ==4:
+	#plt.axis([5e-2,4,0.1,10])
+
+    plt.ylabel('Optical Depth $\\tau(E,z)$',fontsize=12)
+
+# CDF PLOT
+    ax1 = plt.figure(1).add_subplot(2, 1, 2)
+    cumdist_ge = cdf(ks2)
+    cumdist_lt = cdf(ks1)
+
+    if deabs:
+	plt.xlabel(r'Flux Ratio $\frac{\ln(f^{\,\mathrm{deabs}}) - \ln(f^{\,\mathrm{ext}})}{\ln(f^{\,\mathrm{deabs}}) + \ln(f^{\,\mathrm{ext}})}$',fontsize=16)
+    else:
+	plt.xlabel(r'Flux Ratio $\frac{\ln(f^{\,\mathrm{obs}}) - \ln(f^{\,\mathrm{ext}})}{\ln(f^{\,\mathrm{obs}}) + \ln(f^{\,\mathrm{ext}})}$',fontsize=16)
+#    plt.xlabel(r'Difference in power law index, $\Delta\Gamma$',fontsize=12)
+    plt.ylabel(r'Cumulative Distribution Function',fontsize=12)
+    #plt.semilogx(cumdist_ge[0],cumdist_ge[1],drawstyle='steps-post', color = 'r',linewidth = 1.5)
+    #plt.semilogx(cumdist_lt[0],cumdist_lt[1],drawstyle='steps-post', color = 'b',linewidth = 1.5)
+    plt.plot(cumdist_ge[0],cumdist_ge[1],drawstyle='steps-post', color = 'r',linewidth = 1.5)
+    plt.plot(cumdist_lt[0],cumdist_lt[1],drawstyle='steps-post', color = 'b',linewidth = 1.5)
+    if len(lists) == 6:
+	plt.annotate(annotation,xy=(cumdist_ge[0][-5],0.15),fontsize = 14)
+    elif len(lists) == 4:
+	plt.annotate(annotation,xy=(0.35,0.3),fontsize = 14)
+    plt.yticks( np.arange(0,1.2,0.2) )
+    for x in cumdist_ge[0][0:-1]:
+	plt.axvspan(xmin = x, xmax = x*1.01, ymin = 0., ymax = 0.05, color = 'r')
+    plt.axvspan(xmin = cumdist_ge[0][-1], xmax = cumdist_ge[0][-1]*1.01, ymin = 0., ymax = 0.05, color = 'r',label=label3)
+    for x in cumdist_lt[0][0:-1]:
+	plt.axvspan(xmin = x, xmax = x*1.01, ymin = 0., ymax = 0.05, color = 'b')
+    plt.axvspan(xmin = cumdist_lt[0][-1], xmax = cumdist_lt[0][-1]*1.01, ymin = 0., ymax = 0.05, color = 'b',label=label4)
+    #if len(lists) == 6:
+#	plt.axis([1e-1,50,0,1.05])
+#    elif len(lists) ==4:
+#	plt.axis([1e-1,10,0,1.05])
+#    for label in ax1.xaxis.get_ticklabels():
+#	label.set_fontsize(12)
+    for label in ax1.yaxis.get_ticklabels():
+	label.set_fontsize(12)
+    for line in ax1.xaxis.get_ticklines():
+	line.set_markersize(8)
+	line.set_markeredgewidth(1.5)
+    for line in ax1.xaxis.get_minorticklines():
+	line.set_markersize(5)
+	line.set_markeredgewidth(1.5)
+    for line in ax1.yaxis.get_ticklines():
+	line.set_markersize(8)
+	line.set_markeredgewidth(1.5)
+    for line in ax1.yaxis.get_minorticklines():
+	line.set_markersize(5)
+	line.set_markeredgewidth(1.5)
+#    if len(lists) == 6:
+#	plt.legend(loc=2,numpoints=1,prop={'size':12})
+#	plt.axis([min(min(all_r_obs),min(all_r_deabs))-0.01, max(max(all_r_deabs),max(all_r_obs))+0.01,0.,1.2])
+#    elif len(lists) == 4:
+#	plt.legend(loc=2,numpoints=1,prop={'size':12})
+#	plt.axis([min(min(ks1),min(ks2))-0.01, max(max(ks1),max(ks2))+0.01, 0., 1.2])
+
+
+    ax1.xaxis.set_minor_locator(ticker.MultipleLocator(.1))
+    ax1.yaxis.set_minor_locator(ticker.MultipleLocator(.1))
+
+    plt.subplots_adjust(hspace = 0.0, wspace = 0., bottom = 0.1, top = 0.9)
+
+    F = pylab.gcf()
+    F.set_size_inches( (8., 8.) )
+    F.savefig(output, orientation = 'landscape', format = 'png', dpi = (200))
+    F.savefig(output, orientation = 'landscape', format = 'png', dpi = (200))
+    F.savefig(output.split('.')[0] + '.ps', orientation = 'landscape', format = 'ps', dpi = (200))
+    plt.close()
+    return
