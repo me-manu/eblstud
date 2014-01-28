@@ -148,7 +148,7 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
 	kwargs['pinit']['Prefactor'] /= 10.**exp
     if not len(kwargs['limits']):
 	kwargs['limits']['Prefactor'] = (kwargs['pinit']['Prefactor'] / 1e2, kwargs['pinit']['Prefactor'] * 1e2)
-	kwargs['limits']['Index'] = (-10.,2.)
+	kwargs['limits']['Index'] = (-10.,10.)
 	kwargs['limits']['Scale'] = (kwargs['pinit']['Scale'] / 1e2, kwargs['pinit']['Scale'] * 1e2)
     
 
@@ -200,12 +200,14 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
     m.values['Prefactor'] *= 10.**exp
     m.errors['Prefactor'] *= 10.**exp
 
-    for k in kwargs['pinit'].keys():
-	if kwargs['fix'][k]:
-	    continue
-	m.covariance[k,'Prefactor'] *= 10.**exp 
-	m.covariance['Prefactor',k] *= 10.**exp 
-
+    try:
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.covariance[k,'Prefactor'] *= 10.**exp 
+	    m.covariance['Prefactor',k] *= 10.**exp 
+    except TypeError:
+	logging.warning("Hesse matrix not available. Did iminuit.hesse fail?")
 
     if full_output:
 	return fit_stat,m.values, m.errors,m.merrors, m.covariance
@@ -297,7 +299,8 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
     if not len(kwargs['limits']):
 	kwargs['limits']['norm'] = (kwargs['pinit']['norm'] / 1e2, kwargs['pinit']['norm'] * 1e2)
 	kwargs['limits']['alpha'] = (-10.,2.)
-	kwargs['limits']['beta'] = (-5.,5.)
+	#kwargs['limits']['beta'] = (-5.,5.)
+	kwargs['limits']['beta'] = (-5.,0.5)
 	kwargs['limits']['Eb'] = (kwargs['pinit']['Eb'] / 1e2, kwargs['pinit']['Eb'] * 1e2)
     
     m = minuit.Minuit(FillChiSq,
@@ -353,11 +356,14 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
     m.values['norm'] *= 10.**exp
     m.errors['norm'] *= 10.**exp
 
-    for k in kwargs['pinit'].keys():
-	if kwargs['fix'][k]:
-	    continue
-	m.covariance['norm',k] *= 10.**exp 
-	m.covariance[k,'norm'] *= 10.**exp 
+    try:
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.covariance['norm',k] *= 10.**exp 
+	    m.covariance[k,'norm'] *= 10.**exp 
+    except TypeError:
+	logging.warning("Hesse matrix not available. Did iminuit.hesse fail?")
 
     if full_output:
 	return fit_stat,m.values, m.errors,m.merrors, m.covariance
@@ -516,11 +522,14 @@ def MinuitFitBPL(x,y,s,full_output=False, **kwargs):
     m.values['Prefactor'] *= 10.**exp
     m.errors['Prefactor'] *= 10.**exp
 
-    for k in kwargs['pinit'].keys():
-	if kwargs['fix'][k]:
-	    continue
-	m.covariance[k,'Prefactor'] *= 10.**exp 
-	m.covariance['Prefactor',k] *= 10.**exp 
+    try:
+	for k in kwargs['pinit'].keys():
+	    if kwargs['fix'][k]:
+		continue
+	    m.covariance[k,'Prefactor'] *= 10.**exp 
+	    m.covariance['Prefactor',k] *= 10.**exp 
+    except TypeError:
+	logging.warning("Hesse matrix not available. Did iminuit.hesse fail?")
 
 
     if full_output:
