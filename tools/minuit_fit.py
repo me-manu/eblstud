@@ -15,7 +15,6 @@ Version 1.0
 """
 
 import numpy as np
-from eblstud.stats import misc
 from eblstud.tools.lsq_fit import *
 import scipy.special
 import minuit

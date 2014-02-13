@@ -39,6 +39,7 @@ Mpc2cm	=	3.0856776e24
 eV2erg  = 	1.6021765e-12 
 TeV2Hz	=	2.4179895e26
 eV2Hz 	=	2.4179895e+14
+Jy2ergscmHz = 1e-23
 
 # Misc
 M_E_EV	=	5.10999e5	# Electron mass in eV

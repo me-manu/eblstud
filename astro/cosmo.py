@@ -55,6 +55,30 @@ def LumiDistanceSimps(z,cosmo=[h, OmegaM, OmegaL],steps = 30):
 
     return 1e9 * yr2sec * CGS_c / ( h / 9.777752 ) * (1. + z) * simps(kernel,z_array,axis = 1)
 
+def arcsec2Mpc(z,cosmo=[h, OmegaM, OmegaL],steps = 30):
+    """
+    Compute conversion factor for a distance given arcsec to Mpc at redshift z 
+    from simps integration
+
+    Paramters
+    ---------
+    z:		n-dim array, redshift values
+    cosmo:	list with parameter values for h, Omega_M and Omeaga_L
+    steps:	int, number of integration steps
+
+    Returns
+    -------
+    x:	n-dim array with conversion factor arcsec2Mpc
+
+    Notes
+    -----
+    see http://en.wikipedia.org/wiki/Distance_measures_%28cosmology%29
+    """
+    if np.isscalar(z): 
+	z = np.array([z])
+    da = LumiDistanceSimps(z,cosmo,steps) / Mpc2cm / (1. + z) ** 2.	# ang dist in Mpc
+    return da * np.pi / 180. / 3600.			# return conversion factor arcsec2Mpc assuming tan(x) ~ x
+
 def LumiDistanceKern(h = h, OmegaM = OmegaM, OmegaL = OmegaL):
     """
     returns Kernel for Luminosity distance Integrateion

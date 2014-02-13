@@ -17,6 +17,7 @@ from scipy.special import ndtri
 import logging
 from math import ceil
 import subprocess
+import eblstud.tools.iminuit_fit as mf
 
 def plot_extra_legend() :
     from matplotlib.lines import Line2D
@@ -93,10 +94,11 @@ class PPA(object):
 # ------------------------------------------------------------------------------------------#
 # --- Test the pair priduction anomaly -----------------------------------------------------#
 # ------------------------------------------------------------------------------------------#
-    def ppa(self,meas,eblmodel, TauThinLim = 1., TauThickLim = 2., TauScale = 1., EScale = 1., RemovePoints = 0, observed_spec = False, minuit = True, ks_plot = 'None',
-    		save_fit_stat = False):
+    def ppa(self,meas,eblmodel, TauThinLim = 1., TauThickLim = 2., TauScale = 1., EScale = 1., RemovePoints = 0, observed_spec = False,  ks_plot = 'None',
+    		save_fit_stat = False,file_name = 'None', use_pure_borders = True, w_ALPs = 'None'):
 	"""
 	function to calculate pair production anomaly with KS- and t-Test
+	using the iminuit package
 
 	Parameters
 	----------
@@ -108,9 +110,11 @@ class PPA(object):
 	EScale:		Additional scale on the measured energy. default: 1
 	RemovePoints: 	index up to which spectral points are taken into account. default: all points are included
 	observed_spec:	bool, if true, no absortion correction is applied to spectral points
-	minuit:		If true, use minuit to fit functions (recommended and default)
 	ks_plot:	String (needs to end on .pdf), if not None, KS plots will be produced and saved to ks_plot
 	save_fit_stat:	bool, if True, fit statistics are saved in np.arrays
+	file_name:	EBL file name
+	use_pure_borders:	If true, use EBL model for tau borders even if file_name is supplied
+	w_ALPs:		if not None, yaml file to calculate deabs. with ALPs
 
 	Returns
 	-------
@@ -125,19 +129,27 @@ class PPA(object):
 # --- Start to loop over all spectra ----------------------------------------------------#
 
 	ebl = TAU.OptDepth()
-	ebl.readfile(model = eblmodel)
+	ebl.readfile(model = eblmodel, file_name = file_name)
+
+	ebl_fm = TAU.OptDepth(model = eblmodel)	# pure model EBL
 
 	self.TauThinLim		= TauThinLim
 	self.TauThickLim	= TauThickLim
 	self.eblmodel		= eblmodel
 	self.TauScale		= TauScale
 
-	meas = sorted(meas, key=lambda m: m['z'])	# sort by redshift
+	if not w_ALPs == 'None':
+	    import PhotALPsConv.calc_conversion as CC
+	    from eblstud.astro.coord import RaHMS2float,DecDMS2float
+	    cc = CC.Calc_Conv(config = w_ALPs)
+
+	#meas = sorted(meas, key=lambda m: m['z'])	# sort by redshift
 	if save_fit_stat:
 	    id_array	= []
 	    chi2_array	= []
 	    dof_array	= []
-	    p_array	= []
+	    pval_array	= []
+	    pfin_array	= []
 	    E_range	= []
 	    fit_func_array = []
 
@@ -167,13 +179,29 @@ class PPA(object):
 		y = np.array(m['data']['flux'])
 		s = np.array(m['data']['f_err_sym'])
 	    if not TauScale == 0.:
-		t = ebl.opt_depth_array(m['z'],x)[0] * TauScale
+		if use_pure_borders:
+		    t	= ebl_fm.opt_depth_array(m['z'],x)[0] * TauScale
+		    tf	= ebl.opt_depth_array(m['z'],x)[0] * TauScale
+		else:
+		    t = ebl.opt_depth_array(m['z'],x)[0] * TauScale
+		    tf = t
 	    else:
 		t = ebl.opt_depth_array(m['z'],x)[0] * TauScale
 
 	    if not observed_spec:
-		ydeabs = y * np.exp(t)
-		sdeabs = s * np.exp(t)
+		if w_ALPs == 'None':
+		    ydeabs = y * np.exp(tf)
+		    sdeabs = s * np.exp(tf)
+		else:
+		    cc.kwargs['ebl']	= eblmodel
+		    cc.kwargs['ebl_norm']	= TauScale
+		    cc.kwargs['ra']	= RaHMS2float(m['ra'])
+		    cc.kwargs['dec']	= DecDMS2float(m['dec'])
+		    cc.kwargs['z']	= m['z']
+		    cc.update_params_all(**cc.kwargs)
+		    Pt,Pu,Pa = cc.calc_conversion(x * 1e3, new_angles = True)
+		    ydeabs = y / (Pt + Pu)
+		    sdeabs = s / (Pt + Pu)
 	    else:
 		ydeabs = y
 		sdeabs = s
@@ -192,41 +220,38 @@ class PPA(object):
 # --- Start the fitting ------------------------------------------------------------------#
 # --- try PL, LP as fit functions  -------------------------------------------------------#
 
-	    if minuit:
-		import eblstud.tools.minuit_fit as mf
-		minf    = mf.FitMinuit()
-		fit_func= minf.MinuitFitPL,minf.MinuitFitLP
-	    else:
-		fit_func	= lf.lsq_plfit,lf.lsq_logpar
-	    func	= lf.fitfunc_pl,lf.fitfunc_logpar
+	    #minf    = mf.FitMinuit()
+	    fit_func= mf.MinuitFitPL,mf.MinuitFitLP
+	    func	= mf.pl,mf.lp
 
 	    if len(x) < 3:
 		continue
 
 	    for i in range(len(fit_func)):
 
-		fit_stat,pfinal,fit_err,covar = fit_func[i](
+		#fit_stat,pfinal,fit_err,covar = fit_func[i](
+		fit_stat,pfinal,fit_err = fit_func[i](
 		    x,
 		    ydeabs*x**2.,
 		    1.2*sdeabs*x**2.,
-		    full_output = True
+		    #full_output = True
+		    full_output = False
 		    )
-		pfinal[1] -= 2.
-		fit_stat,pfinal,fit_err,covar = fit_func[i](
+		#pfinal[1] -= 2.
+		try:
+		    pfinal['Index'] -= 2.
+		except KeyError:
+		    pfinal['alpha'] -= 2.
+		fit_stat,pfinal,fit_err = fit_func[i](
 		    x,
 		    ydeabs,
 		    sdeabs,
 		    pinit = pfinal, 
-		    full_output = True)
+		   # full_output = True
+		    full_output = False
+		    )
 	    # Consider different norm for logpar (not 1 TeV!)
-		if i == 1:
-		    if not minuit:
-			norm = x[ len(x) / 3]
-		    else:
-			norm = 1.
-		    func_ext = lambda pfinal,x: func[i](pfinal, x / norm)
-		else: 
-		    func_ext = func[i]
+		func_ext = func[i]
 		if fit_stat[2] > 0.05 or len(x) < 4:
 		    break
 		if fit_stat[2] < 0.05:
@@ -236,7 +261,8 @@ class PPA(object):
 		id_array.append(m['object'] + " " + m['instrument'])
 		chi2_array.append(fit_stat[0])
 		dof_array.append(fit_stat[1])
-		p_array.append(fit_stat[2])
+		pval_array.append(fit_stat[2])
+		pfin_array.append(pfinal)
 		E_range.append([x[0],x[-1]])
 		fit_func_array.append(i)
 
@@ -251,37 +277,39 @@ class PPA(object):
 	    # Exclude all spectra with 2 points or less in x[fit]
 #           continue
 		fit_stat    = 0.,2.,1.
-		fit_err     = np.array([0.,0.])
+		fit_err     = {"Scale": 0., "Index": 0., "Prefactor": 0.}
 		func_ext    = func[0]
-		index       = (np.log(ydeabs[fit][1]) - np.log(ydeabs[fit][0])) / \
-		(np.log(x[fit][1]) - np.log(x[fit][0]))
-		norm        = np.exp(np.log(ydeabs[fit][0]) - index * np.log(x[fit][0]))
-		pfinal      = np.array([norm, index])
+		pfinal	    = {}
+		pfinal["Scale"] = x[np.argmax(ydeabs / sdeabs)]
+		pfinal["Index"] = (np.log(ydeabs[fit][1]) - np.log(ydeabs[fit][0])) / \
+		(np.log(x[fit][1]/pfinal["Scale"]) - np.log(x[fit][0]/pfinal["Scale"]))
+		pfinal["Prefactor"]= np.exp(np.log(ydeabs[fit][0]) - pfinal["Index"] * np.log(x[fit][0]/pfinal["Scale"]))
 	    elif len(x[fit]) > 2:
 		for i in range(len(fit_func)):
 
-		    fit_stat,pfinal,fit_err,covar = fit_func[i](
+		    #fit_stat,pfinal,fit_err,covar = fit_func[i](
+		    fit_stat,pfinal,fit_err = fit_func[i](
 			x[fit],
 			ydeabs[fit]*x[fit]**2.,
 			1.2*sdeabs[fit]*x[fit]**2.,
-			full_output = True
+			#full_output = True
+			full_output = False
 			)
-		    pfinal[1] -= 2.
-		    fit_stat,pfinal,fit_err,covar = fit_func[i](
+		    try:
+			pfinal["Index"] -= 2.
+		    except KeyError:
+			pfinal["alpha"] -= 2.
+		    #fit_stat,pfinal,fit_err,covar = fit_func[i](
+		    fit_stat,pfinal,fit_err = fit_func[i](
 			x[fit],
 			ydeabs[fit],
 			sdeabs[fit],
 			pinit = pfinal, 
-			full_output = True)
+			#full_output = True
+			full_output = False
+			)
 		# Consider different norm for logpar (not 1 TeV!)
-		    if i == 1:
-			if not minuit:
-			    norm = (x[fit])[ len(x[fit]) / 3]
-			else:
-			    norm = 1.
-			func_ext = lambda pfinal,x: func[i](pfinal, x / norm)
-		    else: 
-			func_ext = func[i]
+		    func_ext = func[i]
 		    if fit_stat[2] > 0.05:
 			break
 		    if fit_stat[2] < 0.05:
@@ -310,6 +338,12 @@ class PPA(object):
 	self.pKS	= ks.KStest(self.ratio[mtr_thin],self.ratio[mtr_thick])[1]		# p-value of KS-test
 
 	mv  = np.mean(self.residual[mt_thick]), np.std(self.residual[mt_thick], ddof = 1) # mean and std of residual distribution
+# use weighted quantites
+	wmean	= np.sum(self.residual[mt_thick] * self.tau[mt_thick]) / np.sum(self.tau[mt_thick])
+	wstd	= np.sqrt(np.sum(self.tau[mt_thick] * (self.residual[mt_thick] - wmean) ** 2.) / (np.sum(self.tau[mt_thick]) - 1.))
+#	mv	= (wmean, wstd)
+
+
 	pAD = ad.And_Darl_Stat(self.residual[mt_thick])			# p-value of Anderson Darling Test, that residual[mt_thick] follows normal distr.
 	if pAD < 0.05:
 	    logging.warning("probability of Anderson Darling test is small: {0}".format(pAD))
@@ -322,7 +356,8 @@ class PPA(object):
 	    self.id_array	= np.array(id_array)
 	    self.chi2_array	= np.array(chi2_array)
 	    self.dof_array	= np.array(dof_array)
-	    self.p_array	= np.array(p_array)
+	    self.pval_array	= np.array(pval_array)
+	    self.pfin_array	= np.array(pfin_array)
 	    self.E_range	= np.array(E_range)
 
 	if not ks_plot == 'None':
@@ -406,12 +441,18 @@ class PPA(object):
 		fi.write('{0}\t{1}\n'.format(self.tau[i], R))
 	    fi.close()
 
-	    if os.environ["HOST"] == "uh2ulastro15":
-		subprocess.call(['R','-q','-f','script.r'])
-	    elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
-		subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script.r'])
-	    else:
-		logging.warning("R is not installed! Exit.")
+	    try:
+		if os.environ["HOST"] == "uh2ulastro15":
+		    subprocess.call(['R','-q','-f','script.r'])
+		elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
+		    subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script.r'])
+		else:
+		    logging.warning("R is not installed! Exit.")
+	    except KeyError:
+		try:
+		    subprocess.call(['R','-q','-f','script.r'])
+		except:
+		    logging.warning("R is not installed! Exit.")
 	    fi = open('loess.info')
 	    for l in fi.readlines():
 		if l.find('Equivalent') >= 0:
@@ -540,12 +581,18 @@ class PPA(object):
 		fi.write('{0}\t{1}\n'.format(self.tau_ratio[i], R))
 	    fi.close()
 
-	    if os.environ["HOST"] == "uh2ulastro15":
-		subprocess.call(['R','-q','-f','script.r'])
-	    elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
-		subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script.r'])
-	    else:
-		logging.warning("R is not installed! Exit.")
+	    try:
+		if os.environ["HOST"] == "uh2ulastro15":
+		    subprocess.call(['R','-q','-f','script.r'])
+		elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
+		    subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script.r'])
+		else:
+		    logging.warning("R is not installed! Exit.")
+	    except KeyError:
+		try:
+		    subprocess.call(['R','-q','-f','script.r'])
+		except:
+		    logging.warning("R is not installed! Exit.")
 	    fi = open('loess.info')
 	    for l in fi.readlines():
 		if l.find('Equivalent') >= 0:
@@ -678,12 +725,18 @@ class PPA(object):
 		fi.write('{0}\t{1}\n'.format(np.log10(energy[i]), R))
 	    fi.close()
 
-	    if os.environ["HOST"] == "uh2ulastro15":
-		subprocess.call(['R','-q','-f','script_E.r'])
-	    elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
-		subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script_E.r'])
-	    else:
-		logging.warning("R is not installed! Exit.")
+	    try:
+		if os.environ["HOST"] == "uh2ulastro15":
+		    subprocess.call(['R','-q','-f','script_E.r'])
+		elif os.environ["HOST"] == "crf-wgs01" or os.environ["HOST"] == "astro-wgs01":
+		    subprocess.call(['/nfs/astrop/d1/software/R/bin/R','-q','-f','script_E.r'])
+		else:
+		    logging.warning("R is not installed! Exit.")
+	    except KeyError:
+		try:
+		    subprocess.call(['R','-q','-f','script_E.r'])
+		except:
+		    logging.warning("R is not installed! Exit.")
 	    fi = open('loess_E.info')
 	    for l in fi.readlines():
 		if l.find('Equivalent') >= 0:

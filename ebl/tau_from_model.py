@@ -106,9 +106,9 @@ class OptDepth(object):
 	if model == 'kneiske' or model == 'dominguez':
 	    if file_name == 'None':
 		if model == 'kneiske':
-		    file_name = ebl_file_path + 'tau_ebl_cmb_kneiske.dat'
+		    file_name = os.path.join(ebl_file_path , 'tau_ebl_cmb_kneiske.dat')
 		if model == 'dominguez':
-		    file_name = ebl_file_path + 'tau_dominguez10.dat'
+		    file_name = os.path.join(ebl_file_path , 'tau_dominguez10.dat')
 
 	    data = np.loadtxt(file_name)
 	    self.z = data[0,1:]
@@ -119,7 +119,7 @@ class OptDepth(object):
 		self.logEGeV = np.log10(data[1:,0]*1e3)
 	elif model == 'franceschini':
 	    if file_name == 'None':
-		file_name = ebl_file_path + 'tau_fran08.dat'
+		file_name = os.path.join(ebl_file_path , 'tau_fran08.dat')
 	    data = np.loadtxt(file_name,usecols=(0,2))
 	    self.logEGeV = np.log10(data[0:50,0]*1e3)
 	    self.tau = np.zeros((len(self.logEGeV),len(data[:,1])/len(self.logEGeV)))
@@ -129,14 +129,14 @@ class OptDepth(object):
 		self.z[i] += 1e-3*(i+1.)
 	elif model == 'inoue':
 	    if file_name == 'None':
-		file_name = ebl_file_path + 'tau_gg_baseline.dat'
+		file_name = os.path.join(ebl_file_path , 'tau_gg_baseline.dat')
 	    data = np.loadtxt(file_name)
 	    self.z = data[0,1:]
 	    self.tau = data[1:,1:]
 	    self.logEGeV = np.log10(data[1:,0]*1e3)
 	elif model == 'gilmore':
 	    if file_name == 'None':
-		file_name = ebl_file_path + 'opdep_fiducial.dat'
+		file_name = os.path.join(ebl_file_path , 'opdep_fiducial.dat')
 	    data = np.loadtxt(file_name)
 	    self.z = data[0,1:]
 	    self.tau = data[1:,1:]
