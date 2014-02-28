@@ -19,3 +19,6 @@ def calc_bin_bounds(X):
     bin_bounds[0]	= X[0] **2. / bin_bounds[1]
     bin_bounds[-1]	= X[-1]**2. / bin_bounds[-2]
     return bin_bounds
+
+# Energy dispersion: E: ndim array, Etrue, scalar or ndim array, sigE: dispersion 
+edisp = lambda E,Etrue,sigE :  np.exp(-0.5 * (E - Etrue)**2. / sigE ** 2.) / np.sqrt(2 * np.pi) / sigE

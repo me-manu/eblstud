@@ -1,1 +1,1 @@
-__all__ = ['GridScanBSplines', 'lsq_fit','minuit_fit','iminuit_fit']
+__all__ = ['GridScanBSplines', 'lsq_fit','minuit_fit','iminuit_fit','simulate_spec']
