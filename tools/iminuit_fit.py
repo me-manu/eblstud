@@ -19,7 +19,7 @@ import warnings,logging
 from math import ceil,floor
 # ----------------------------------- #
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 
 # - Fitting functions ----------------------------------------------------------------------- #
 pl      = lambda p,x : p['Prefactor'] * (x / p['Scale']) ** p['Index']
@@ -182,18 +182,18 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
     # second fit
     m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
     m.migrad(ncall = kwargs['ncall'])
-    logging.info("PL: Migrad minimization finished")
+    logging.debug("PL: Migrad minimization finished")
 
     m.hesse()
-    logging.info("PL: Hesse matrix calculation finished")
+    logging.debug("PL: Hesse matrix calculation finished")
 
     if full_output:
-	logging.info("PL: Running Minos for error estimation")
+	logging.debug("PL: Running Minos for error estimation")
 	for k in kwargs['pinit'].keys():
 	    if kwargs['fix'][k]:
 		continue
 	    m.minos(k,1.)
-	logging.info("PL: Minos finished")
+	logging.debug("PL: Minos finished")
 
     fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
 
@@ -338,18 +338,18 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
     # second fit
     m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
     m.migrad(ncall = kwargs['ncall'])
-    logging.info("LP: Migrad minimization finished")
+    logging.debug("LP: Migrad minimization finished")
 
     m.hesse()
-    logging.info("LP: Hesse matrix calculation finished")
+    logging.debug("LP: Hesse matrix calculation finished")
 
     if full_output:
-	logging.info("LP: Running Minos for error estimation")
+	logging.debug("LP: Running Minos for error estimation")
 	for k in kwargs['pinit'].keys():
 	    if kwargs['fix'][k]:
 		continue
 	    m.minos(k,1.)
-	logging.info("LP: Minos finished")
+	logging.debug("LP: Minos finished")
 
     fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
 
@@ -504,18 +504,18 @@ def MinuitFitBPL(x,y,s,full_output=False, **kwargs):
     # second fit
     m = minuit.Minuit(FillChiSq, print_level = kwargs['print_level'],errordef = kwargs['up'], **m.fitarg)
     m.migrad(ncall = kwargs['ncall'])
-    logging.info("BPL: Migrad minimization finished")
+    logging.debug("BPL: Migrad minimization finished")
 
     m.hesse()
-    logging.info("BPL: Hesse matrix calculation finished")
+    logging.debug("BPL: Hesse matrix calculation finished")
 
     if full_output:
-	logging.info("BPL: Running Minos for error estimation")
+	logging.debug("BPL: Running Minos for error estimation")
 	for k in kwargs['pinit'].keys():
 	    if kwargs['fix'][k]:
 		continue
 	    m.minos(k,1.)
-	logging.info("BPL: Minos finished")
+	logging.debug("BPL: Minos finished")
 
     fit_stat = m.fval, float(len(x) - npar), pvalue(float(len(x) - npar), m.fval)
 
