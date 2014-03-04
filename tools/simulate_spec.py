@@ -18,9 +18,51 @@ from scipy.stats import poisson
 import logging
 from kapteyn import wcs
 import pyfits
+import my_fermi
+import my_fermi.base.photons as fp
+from os.path import join
 # ----------------------------------- #
 
 logging.basicConfig(level=logging.INFO)
+
+# --- get r68 for Fermi --- #
+def getPSFr68(Ereco, front = None, back = None):
+	"""
+	Get the r68 PSF confidence radius for front converted events for nominal incidence of Fermi-LAT
+
+	Parameters
+	----------
+	Ereco:	n-dim array with reconstructed energies in MeV
+
+	kwargs
+	------
+	front:	string, path to edisp fits file for front converted events. 
+		If none, use P8 files strored in my_fermi/irfs/P8 (default = None)
+	back:	string, path to edisp fits file for front converted events. 
+		If none, use P8 files strored in my_fermi/irfs/P8 (default = None)
+
+	Returns
+	-------
+	function pointer to r68 interpolation
+	"""
+	ct = np.ones(Ereco.shape[0])
+	th = np.ones(Ereco.shape[0])
+
+
+	if front == None or back == None:
+	    path	= join(my_fermi.__path__[0],'irfs/P8')
+	    front	= 'psf_P8SOURCE_V20R9P0_V0_front.fits'
+	    back 	= 'psf_P8SOURCE_V20R9P0_V0_back.fits'
+
+	psf	= fp.PSF(join(path , back),join(path , front))
+	r68	= np.zeros(Ereco.shape[0])
+	for i,eR in enumerate(Ereco):
+	    r68[i]	= psf.calc_r68(0.68,eR,0,th[i]) * 180. / np.pi
+
+	from scipy.interpolate import interp1d
+	rInterp = interp1d(log(Ereco),r68)
+
+	return lambda E: rInterp(log(E))
 
 # --- Energy dispersion functions --- #
 def edisp_Egauss(Etrue, Ereco, **kwargs):
@@ -184,6 +226,7 @@ class SimulateObs(object):
 	# --- calculate average exposure in each energy bin
 
 	return self.nPhot
+
     def simulateNphot(self, numSim = 1, flux = False):
 	"""
 	Simulate the number of events in each energy bin.
@@ -317,6 +360,58 @@ class SimulateObs(object):
 
 	self.isoDiff	= lambda EMeV: exp(logIso(log(EMeV)))
 	self.EisoMeV	= iso[:,0]
+
+	return
+	
+    def setEdispFermi(self, Ereco, eTrueSteps = 300, front = None, back = None):
+	"""
+	Set energy dispersion to Fermi's energy dispersion, assuming theta = 0 and front conversion,
+	using 2d interpolation.
+
+	Parameters
+	----------
+	Ereco:	n-dim array with reconstructed energies in MeV
+
+	kwargs
+	------
+	eTrueSteps:	True energy steps
+	front:	string, path to edisp fits file for front converted events. 
+		If none, use P8 files strored in my_fermi/irfs/P8 (default = None)
+	back:	string, path to edisp fits file for front converted events. 
+		If none, use P8 files strored in my_fermi/irfs/P8 (default = None)
+
+	Returns
+	-------
+	"""
+	ct = np.ones(Ereco.shape[0])
+	th = np.ones(Ereco.shape[0])
+
+
+	if front == None or back == None:
+	    #path	= join(my_fermi.__path__[0],'irfs/P8')
+	    #front	= 'edisp_P8SOURCE_V20R9P0_V0_front.fits'
+	    #back 	= 'edisp_P8SOURCE_V20R9P0_V0_back.fits'
+	    path	= join(my_fermi.__path__[0],'irfs/P7REP')
+	    front	= 'edisp_P7REP_CLEAN_V15_front.fits'
+	    back 	= 'edisp_P7REP_CLEAN_V15_back.fits'
+
+	edisp	= fp.EDISP(join(path , back),join(path , front))
+	Ed	= np.zeros((eTrueSteps,Ereco.shape[0]))
+	Etrue = 10.**np.linspace(np.log10(Ereco[0]) - 2., np.log10(Ereco[-1]) + 2.,eTrueSteps)
+	for j,eR in enumerate(Ereco):
+	    #N = edisp.p_E_disp_x(5.,eR,ct[j],th[j])
+	    N = 1.
+	    for i,eT in enumerate(Etrue):
+		x 	= (eR - eT) / (eT * edisp.scaling_factor(eT,th[j],ct[j]))
+		Ed[i,j]	= edisp.E_disp(x,eR,th[j],ct[j]) / N
+		if Ed[i,j] == 0.:
+		    Ed[i,j] = 1e-40
+
+	from scipy.interpolate import RectBivariateSpline as RBSpline
+
+	self.scaling_factor = edisp.scaling_factor
+	self.edispInterp = RBSpline(log(Etrue),log(Ereco),log(Ed),kx = 2, ky = 2)
+	self.edisp = lambda Etrue,Ereco,**par: exp(self.edispInterp(log(Etrue),log(Ereco)))
 
 	return
 
