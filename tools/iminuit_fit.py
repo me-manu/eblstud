@@ -241,6 +241,8 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
     limits		dictionary containing 2-tuple for all fit parameters
     pinit		dictionary with initial fit for all fir parameters
     fix			dictionary with booleans if parameter is frozen for all fit parameters
+    func		function pointer to analytical function. Needs to be of the form func(params,E), where 
+    			params = {'Eb','alpha','beta',norm'} (default = lp)
 
     Returns
     -------
@@ -258,6 +260,7 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
     """
 # --- Set the defaults
     kwargs.setdefault('print_level',0)		# no output
+    kwargs.setdefault('func',lp)		# fitting function
     kwargs.setdefault('int_steps',0.1)		# Initial step width, multiply with initial values in m.errors
     kwargs.setdefault('strategy',1)		# 0 = fast, 1 = default, 2 = thorough
     kwargs.setdefault('tol',1.)			# Tolerance of fit = 0.001*tol*UP
@@ -287,7 +290,7 @@ def MinuitFitLP(x,y,s,full_output=False, **kwargs):
 
     def FillChiSq(norm,alpha,beta,Eb):
 	params = {'norm': norm, 'alpha': alpha, 'Eb': Eb, 'beta': beta}
-	return np.sum(errfunc(lp,params,x,y,s)**2.)
+	return np.sum(errfunc(kwargs['func'],params,x,y,s)**2.)
 
     # Set initial Fit parameters, initial step width and limits of parameters
     if not len(kwargs['pinit']):
