@@ -91,6 +91,8 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
     limits		dictionary containing 2-tuple for all fit parameters
     pinit		dictionary with initial fit for all fir parameters
     fix			dictionary with booleans if parameter is frozen for all fit parameters
+    func		function pointer to analytical function. Needs to be of the form func(params,E), where 
+    			params = {'Prefactor','Index','Scale'} (default = pl)
 
     Returns
     -------
@@ -117,6 +119,7 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
     kwargs.setdefault('limits',{})
     kwargs.setdefault('pinit',{})
     kwargs.setdefault('fix',{'Index': False , 'Prefactor': False, 'Scale' : True})	
+    kwargs.setdefault('func',pl)	
 # --------------------
 	
     npar = 2
@@ -137,7 +140,7 @@ def MinuitFitPL(x,y,s,full_output=False, **kwargs):
 
     def FillChiSq(Prefactor,Index,Scale):
 	params = {'Prefactor': Prefactor, 'Index': Index, 'Scale': Scale}
-	return np.sum(errfunc(pl,params,x,y,s)**2.)
+	return np.sum(errfunc(kwargs['func'],params,x,y,s)**2.)
 
     # Set initial Fit parameters, initial step width and limits of parameters
     if not len(kwargs['pinit']):
