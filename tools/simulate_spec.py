@@ -11,16 +11,15 @@ __author__ = "M. Meyer // manuel.meyer@fysik.su.se"
 
 # - Imports ------------------------- #
 import numpy as np
-from numpy import meshgrid,exp,sqrt,pi,log10,linspace,isscalar,array,vstack,log,dstack,hstack,zeros
+from numpy import meshgrid,exp,sqrt,pi,log10,linspace,isscalar,array,vstack,log,dstack,hstack,zeros,invert
 from scipy.integrate import simps
 from scipy.interpolate import interp1d
 from scipy.stats import poisson
 import logging
 from kapteyn import wcs
 import pyfits
-import my_fermi
-import my_fermi.base.photons as fp
 from os.path import join
+from hess.stats import li_ma
 # ----------------------------------- #
 
 logging.basicConfig(level=logging.INFO)
@@ -45,6 +44,10 @@ def getPSFr68(Ereco, front = None, back = None):
 	-------
 	function pointer to r68 interpolation
 	"""
+	import my_fermi
+	import my_fermi.base.photons as fp
+	from scipy.interpolate import interp1d
+
 	ct = np.ones(Ereco.shape[0])
 	th = np.ones(Ereco.shape[0])
 
@@ -59,7 +62,6 @@ def getPSFr68(Ereco, front = None, back = None):
 	for i,eR in enumerate(Ereco):
 	    r68[i]	= psf.calc_r68(0.68,eR,0,th[i]) * 180. / np.pi
 
-	from scipy.interpolate import interp1d
 	rInterp = interp1d(log(Ereco),r68)
 
 	return lambda E: rInterp(log(E))
@@ -116,12 +118,13 @@ class SimulateObs(object):
 	src_spec:	source spectrum; function pointer, needs to be called like src_spec(energy, **src_par)
 	src_par:	additional parameters for source spectrum
 
-	exposure:	exposure; function pointer, needs to be called like exposure(energy, **exp_par)
-	exp_par:	additional parameters for source spectrum
+	exposure:	exposure or effective area; function pointer, needs to be called like exposure(energy, **exp_par)
+	exp_par:	additional parameters for exposure / effective area
 
 	edisp:		energy dispersion; function pointer, needs to be called like edisp(Ereco, Etrue, **edisp_par),
 			where Ereco and Etrue are n,m - dim arrays and an n x m dim array is returned
 	edisp_par:	additional paramerters for energy dispersion
+	GAUSL:		if counts < GAUSL: poisson asymmetric errors will be used.
 
 	Returns
 	-------
@@ -130,11 +133,24 @@ class SimulateObs(object):
 # --- Set the defaults
 	kwargs.setdefault('edisp',edisp_Egauss)
 	kwargs.setdefault('edisp_par',{'sE':0.06})
+	kwargs.setdefault('GAUSL',20)
 # --------------------
 	self.__dict__.update(kwargs)
+
+# --- Poisson asymeetric errors for small number
+        self.poisUp = np.array([1.0, 1.4314, 1.793, 2.0894, 2.3452, 
+                     2.5732, 2.7808, 2.9726, 3.1518,  3.3204,
+                     3.4802, 3.6324, 3.778, 3.9178, 4.0526,
+                     4.1826,  4.3084, 4.4306, 4.5492, 4.6646, 
+                     4.777,  4.8866,  4.9938, 5.0986, 5.201,  5.3016])
+	self.poisLo = np.array([0.0, 0.8486, 1.2268, 1.5288, 1.7872,
+                     2.017, 2.2256, 2.4182, 2.5978, 2.767,    
+                     2.9272, 3.0798, 3.2256, 3.3656, 3.5006,
+                     3.6308, 3.7568, 3.879, 3.9976, 4.1132,
+                     4.2256, 4.3354, 4.4426, 4.5474, 4.65, 4.7506])
 	return
 
-    def nPhotBin(self,ErecoBin, eTrueSteps = 0, eRecoSteps = 50, eSigma = 5.):
+    def nPhotBin(self,ErecoBin, eTrueSteps = 0, eRecoSteps = 50, eSigma = 5., Tobs = 1.):
 	"""
 	compute expected number of photons in each energy bin
 
@@ -219,15 +235,15 @@ class SimulateObs(object):
 	    specEReco		= simps(self.eDisp * self.src_spec(exp(self.logETrue),self.src_par) * self.exposure(exp(self.logETrue),self.exp_par) * exp(self.logETrue),
 					self.logETrue, axis = 1) 
 	# --- integrate over reconstructed eneryg in each energy bin
-	    self.nPhot		= simps(specEReco * exp(self.logEReco),self.logEReco,axis = 1)
+	    self.nPhot		= simps(specEReco * exp(self.logEReco),self.logEReco,axis = 1) * Tobs
 	else:
 	    self.nPhot		= simps(self.src_spec(exp(self.logEReco),self.src_par) * self.exposure(exp(self.logEReco),self.exp_par) * exp(self.logEReco),
-					self.logEReco,axis = 1)
+					self.logEReco,axis = 1) * Tobs
 	# --- calculate average exposure in each energy bin
 
 	return self.nPhot
 
-    def simulateNphot(self, numSim = 1, flux = False):
+    def simulateNphot(self, numSim = 1, flux = False, Tobs = 1.):
 	"""
 	Simulate the number of events in each energy bin.
 	The expected number of events is calculated by nPhotBin and stored in self.nPhot, the energy bin bounds are given in self.EbinBounds.
@@ -235,7 +251,8 @@ class SimulateObs(object):
 	kwargs
 	------
 	numSim:	integer, number of simulations
-	flux:	boolean, if true, return simulated number of counts divided by exposure and bin width
+	flux:	boolean, if true, return simulated number of counts divided by exposure / effective area and bin width
+	Tobs:	float, observation time in seconds (if exposure is given instead of effective area, this should be one, default = 1.)
 
 	Returns:
 	--------
@@ -246,9 +263,58 @@ class SimulateObs(object):
 	R = poisson.rvs(nn)			# do the random number generation
 
 	if flux:
-	    return R / self.dEbin / self.expAve
+	    return R / self.dEbin / self.expAve / Tobs
 	else:
 	    return R
+
+    def simulateNexcess(self, expBkg, alpha, numSim = 1, flux = False, Tobs = 1.):
+	"""
+	Simulate the number of excess events in each energy bin.
+	The expected number of signal events is calculated by nPhotBin and stored in self.nPhot, the energy bin bounds are given in self.EbinBounds.
+    
+	Arguments
+	---------
+	expBkg:	n-dim array (same energy bins as self.nPhot), expected number of background counts
+	alpha:	float, ratio between ON and OFF exposure
+
+	kwargs
+	------
+	numSim:	integer, number of simulations
+	flux:	boolean, if true, return simulated number of counts divided by exposure / effective area and bin width
+	Tobs:	float, observation time in seconds (if exposure is given instead of effective area, this should be one, default = 1.)
+
+	Returns:
+	--------
+	(numSim x EbinBounds.shape[0]) - dim array with poissonian random numbers for the excess events 
+	(2 x numSim x EbinBounds.shape[0]) - dim array with lo, up errors for poissonian random numbers for the excess events 
+	(numSim x EbinBounds.shape[0]) - dim masked array with Li & Ma significances, mask: (fON > 0.) & (fOFF > 0.)
+	"""
+	dummy = np.ones(numSim)			# dummy array for right shape	
+	nn,dd = meshgrid(self.nPhot,dummy)	# nn: numsim x self.nPhot.shape dim array with self.nPhot in each row
+	bb,dd = meshgrid(expBkg,dummy)	# nn: numsim x self.nPhot.shape dim array with self.nPhot in each row
+	fON   = poisson.rvs(nn + bb)			# do the random number generation
+	fOFF  = poisson.rvs(bb / alpha)			# do the random number generation
+	fExcess	= fON - alpha * fOFF
+
+	S	= np.ma.masked_array(li_ma(np.ma.masked_array(fON, mask = fON <= 0.),
+					    np.ma.masked_array(fOFF, mask = fON <= 0.),alpha), 
+				    mask = (fON <= 0.) & (fOFF <= 0.)
+				    )
+
+	maskON	= fON	> self.GAUSL
+	maskOFF	= fOFF	> self.GAUSL
+
+	dfExcess = np.array([
+		    sqrt((fON * maskON + self.poisLo[fON.astype(int) * invert(maskON)] * invert(maskON) ) + \
+			    alpha**2. * (fOFF * maskOFF + self.poisLo[fOFF.astype(int) * invert(maskOFF)] * invert(maskOFF) )),
+		    sqrt((fON * maskON + self.poisUp[fON.astype(int) * invert(maskON)] * invert(maskON) ) + \
+			    alpha**2. * (fOFF * maskOFF + self.poisUp[fOFF.astype(int) * invert(maskOFF)] * invert(maskOFF) ))
+		    ])
+	if flux:
+	    return fExcess / self.dEbin / self.expAve / Tobs, dfExcess / self.dEbin / self.expAve / Tobs, S
+	else:
+	    dfExcess = sqrt(fON + alpha**2. * fOFF)
+	    return fExcess , dfExcess, S
 
 
     def setExposureFermi(self,ra=None,dec=None,exposure = None):
@@ -383,6 +449,9 @@ class SimulateObs(object):
 	Returns
 	-------
 	"""
+	import my_fermi
+	import my_fermi.base.photons as fp
+
 	ct = np.ones(Ereco.shape[0])
 	th = np.ones(Ereco.shape[0])
 
