@@ -13,7 +13,6 @@ Version 0.1
 # - Imports ------------------------- #
 import numpy as np
 from eblstud.tools.lsq_fit import *
-import scipy.special
 import iminuit as minuit
 import warnings,logging
 from math import ceil,floor

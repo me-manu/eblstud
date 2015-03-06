@@ -13,6 +13,7 @@ import eblstud.stats.ks as ks
 import eblstud.stats.anderson_darling as ad
 from scipy.stats import t as tstat
 from scipy.stats import norm as norm_dist
+from scipy.stats import anderson
 from scipy.special import ndtri
 import logging
 from math import ceil
@@ -74,6 +75,16 @@ class PPA(object):
 	self.redshift_ratio	= np.array([])
 	self.ratio	= np.array([])
 	self.residual	= np.array([])
+	self.ids	= []
+	self.x		= {}
+	self.y		= {}
+	self.s		= {}
+	self.t		= {}
+	self.c2		= {}
+	self.z		= {}
+	self.sdeabs	= np.array([])
+	self.ydeabs	= np.array([])
+	self.ymodel	= np.array([])
 
 	return
 
@@ -89,6 +100,16 @@ class PPA(object):
 	self.redshift_ratio	= np.array([])
 	self.ratio	= np.array([])
 	self.residual	= np.array([])
+	self.ids	= []
+	self.x		= {}
+	self.y		= {}
+	self.s		= {}
+	self.t		= {}
+	self.c2		= {}
+	self.z		= {}
+	self.sdeabs	= np.array([])
+	self.ydeabs	= np.array([])
+	self.ymodel	= np.array([])
 	return
 
 # ------------------------------------------------------------------------------------------#
@@ -153,6 +174,7 @@ class PPA(object):
 	    E_range	= []
 	    fit_func_array = []
 
+	meas = sorted(meas, key = lambda m: m['z'])
 	for m in meas:
 	    if m['z_uncertain']:
 		continue
@@ -270,6 +292,9 @@ class PPA(object):
 	    self.energy		= np.concatenate( (self.energy,x) )
 	    self.redshift	= np.concatenate( (self.redshift,m['z']*np.ones(x.shape[0])) )
 	    self.residual	= np.concatenate( (self.residual, ResidualCalc( ydeabs,func_ext(pfinal,x),sdeabs )) )
+	    self.sdeabs		= np.concatenate( (self.sdeabs, sdeabs) )
+	    self.ydeabs		= np.concatenate( (self.ydeabs, ydeabs) )
+	    self.ymodel		= np.concatenate( (self.ymodel, func_ext(pfinal,x)) )
 
 	    #print m['id'], len(x[fit])
 	    cont = False
@@ -327,7 +352,14 @@ class PPA(object):
 	    self.redshift_ratio	= np.concatenate( (self.redshift_ratio,m['z']*np.ones(x.shape[0])) )
 	    self.energy_ratio	= np.concatenate( (self.energy_ratio, x))
 
-
+	    if save_fit_stat:		# save fit statistics
+		self.ids.append(m['id'])
+		self.x[m['id']] = x
+		self.y[m['id']] = y
+		self.s[m['id']] = s
+		self.t[m['id']] = t
+		self.z[m['id']] = m['z']
+		self.c2[m['id']] = fit_stat[0]
 
 	mt_thin  = (self.tau >= TauThinLim) & (self.tau < TauThickLim)	# mask for opt thin distr. for t test
 	mt_thick = self.tau >= TauThickLim			 	# mask for opt thick distr. for t test
@@ -344,9 +376,12 @@ class PPA(object):
 #	mv	= (wmean, wstd)
 
 
-	pAD = ad.And_Darl_Stat(self.residual[mt_thick])			# p-value of Anderson Darling Test, that residual[mt_thick] follows normal distr.
-	if pAD < 0.05:
-	    logging.warning("probability of Anderson Darling test is small: {0}".format(pAD))
+	#pAD = ad.And_Darl_Stat(self.residual[mt_thick])			# p-value of Anderson Darling Test, that residual[mt_thick] follows normal distr.
+	#if pAD < 0.05:
+	#    logging.warning("probability of Anderson Darling test is small: {0}".format(pAD))
+	pAD = anderson(self.residual[mt_thick])
+	if pAD[0] > pAD[1][2]:
+	    logging.warning("Anderson Darling rejects normal distribution with prob larger than {0}%".format(100. - pAD[2][2]))
 
 	T   = mv[0] / mv[1] * np.sqrt(np.sum(mt_thick))
 	self.pT  = tstat.cdf(T, np.sum(mt_thick) - 1)			# p-value of T-test that distribution follows Gaussian with zero mean
@@ -366,6 +401,17 @@ class PPA(object):
 	    ks.plot_KStest1(self.ratio[mtr_thin],self.ratio[mtr_thick], filename = ks_plot, xlabel = 'Ratio')
 	return self.pKS, self.pT
 
+    def print_sample(self):
+	for i, id in enumerate(self.ids):
+	    nTlt1 = np.sum(self.t[id] < 1.)
+	    nTlt2 = np.sum((self.t[id] < 2.) & (self.t[id] >= 1.))
+	    nTgt2 = np.sum(self.t[id] >= 2.)
+	    logging.info('{6:4n}) {0:30s}: z = {1:5.3f} {2:5n} {3:5n} {4:5n} {5:5.2f} {7:5.2f}'.format(id,self.z[id],
+											    nTlt1, nTlt2, nTgt2, 
+											    self.c2[id],i + 1,np.max(self.t[id]))
+			)
+	return
+	
 # ------------------------------------------------------------------------------------------#
 # --- Mean vs Tau Plot and Histograms ------------------------------------------------------#
 # ------------------------------------------------------------------------------------------#

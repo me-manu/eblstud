@@ -104,6 +104,8 @@ class EBL(object):
 		logging.warning("Inoue model is only provided for z = 0!")
 	    elif model == 'gilmore':
 		file_name = ebl_file_path + 'eblflux_fiducial.dat'
+	    elif model == 'cuba':
+		file_name = ebl_file_path + 'CUBA_UVB.dat'
 	    else:
 		raise ValueError("Unknown EBL model chosen!")
 
@@ -120,6 +122,20 @@ class EBL(object):
 		self.nuInu = data[2:,1:]			# do not use first lines, as it includes zeros, is photon density
 		self.nuInu *= 1e6 * np.meshgrid(data[2:,0],self.z)[0].transpose()		# convert from ergs/s/cm^2/Ang/sr to nW/m^2/sr
 		self.nuInu = np.log10(self.nuInu)
+	    if model == 'cuba':
+		self.z = data[0,1:-1]
+		self.logl = np.log10(data[1:,0] * 1e-4)
+		self.nuInu = data[1:,1:-1]
+		# replace zeros by 1e-40
+		idx = np.where(data[1:,1:-1] == 0.)
+		self.nuInu[idx] = np.ones(np.sum(self.nuInu == 0.)) * 1e-40
+		self.nuInu = np.log10(self.nuInu.transpose() * SI_c / (10.**self.logl * 1e-6)).transpose()	# in erg / cm^2 / s / sr
+		self.nuInu += 6	# in nW / m^2 /  sr
+
+		# check where logl is not strictly increasing
+		idx = np.where(np.diff(self.logl) == 0.)
+		for i in idx[0]:
+		    self.logl[i+1] = (self.logl[i + 2] + self.logl[i]) / 2.
 	    else:
 		self.z = data[0,1:]
 		self.logl = np.log10(data[1:,0])

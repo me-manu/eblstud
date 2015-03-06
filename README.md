@@ -5,11 +5,14 @@ Python packages to conduct studies of the Extragalactic Background Light (EBL).
 
 Prerequisites
 -------------
-Running version of python 2.7 and newest versions of the following packages:
+For the simplest use, i.e. reading in EBL model files and calculating the gamma-ray attenuation 
+from them, you'll need a running version of python 2.7 and newest versions of the following packages:
 - numpy
 - scipy
 - matplotlib
 
+Some extra packages are also required if you want to perform non-standard calculations 
+included in the directories tools/, ppa/, ebl/
 
 Installation
 ------------
@@ -20,6 +23,11 @@ e.g. by typing (or including in your .bashrc file):
 
 To use EBL model files, you have to set the EBL_FILE_PATH environment variable, e.g., by typing 
 > export EBL_FILE_PATH=/path/to/repro/ebl/ebl_model_files
+
+The EBL model files are included in the ebl path. 
+Check the installation by running 
+> python example.py
+The script is heavily commented to explain its use.
 
 License
 -------

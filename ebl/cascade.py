@@ -1,14 +1,282 @@
 import numpy as np
+from numpy import log,vstack,dstack,linspace,exp,ma,ones,sum
 import math
 from scipy import integrate
 from scipy import Inf
 from eblstud.astro.cosmo import *
+import eblstud.ebl.tau_from_model as tfm
+from eblstud.tools.iminuit_fit import pl,lp
+from eblstud.misc.constants import *
+
+class Cascade(object):
+    """
+    Class to calculate cascade emission following Dermer et al. (2011), Tavecchio et al. (2011), Meyer et al. (2012).
+    """
+    def __init__(self,**kwargs):
+	"""
+	Initialize the Cascade class.
+
+	kwargs
+	------
+	BIGMF:		float, intergalactic magnetic field strength in 10^-15 G (default = 1.)
+	tmax:		float, time in years for which AGN has been emitting gamma-rays (default = 10.)
+	EmaxTeV:	float, maximum energy of primary gamma-ray emission in TeV (default = 50.)
+	eblModel:	ebl model string (default = 'franceschini')
+	bulkGamma:	float, gamma factor of bulk plasma in jet (default = 1.)
+	intSpec:	function pointer to intrinsic AGN spectrum, call signature: intSpec(Energy (TeV), intSpecPar) (default= power law)
+	intSpecPar:	dictionary, intrinsic spectral parameters (default: {'Prefactor': 1e-10, 'Scale': 100 GeV, 'Index': -2.})
+	zSource:	float, source redshift (default = 0.1)
+	"""
+	# --- setting the defaults
+	kwargs.setdefault('BIGMF',1.)
+	kwargs.setdefault('zSource',0.1)
+	kwargs.setdefault('tmax',10.)
+	kwargs.setdefault('eblModel','franceschini')
+	kwargs.setdefault('bulkGamma',1.)
+	kwargs.setdefault('EmaxTeV',15.)
+	kwargs.setdefault('intSpec',lambda e,par: pl(par,e))
+	kwargs.setdefault('intSpecPar',{'Prefactor': 1e-10, 'Scale': 100. , 'Index': -2.})
+	
+	# ------------------------
+	self.__dict__.update(kwargs)
+
+	self.tau = tfm.OptDepth(model = self.eblModel)
+
+	self.E2eps = lambda ETeV: 0.63*ETeV**2.			# energy (in GeV) of CMB photon upscattered by electron produced in EBL
+								# pair production with primary gamma-ray of energy E in TeV
+	self.eps2E = lambda epsGeV: 1.26*np.sqrt(epsGeV)	# energy (in TeV) of primary gamma-ray for upscattered CMB photon of energy eps (GeV)
+
+	return
+    def _F_IC_T(self,x):
+	"""
+	Calculate inverse compton kernel in Thomson regime.
+    
+	Parameter
+	---------
+	x:	array with x = eps / (4. * E * gamma ** 2.)
+    
+	Returns
+	-------
+	array with IC kernel
+	"""
+	return 2.*x *np.log(x) + x + 1. - 2.*x**2.
+
+
+    def gammaEngine(self,epsGeV):
+	"""
+	Returns minimum gamma factor for IC scattering (Thomson limit integration)
+	for cascade emission. 
+	gammaEngine is the gamma factor to which e^+e^- pairs have cooled
+	if source is running for certain time.
+	It also depends on the optical depth of the primary emission, the B field, source redshift and energy
+	upscattered photon.
+
+	Parameters
+	----------
+	epsGeV:		n-dim array, energy of upscattered CMB photons
+
+	Returns
+	-------
+	n-dim array with minimum gamma factors.
+
+	Notes
+	-----
+	See Dermer et al. (2011) Eq. 
+	"""
+	# Compute the luminosity distance d_L in units 100 Mpc and approximate mean free path
+	# for pair production by d_L / tau 
+	d_L = LumiDistance(self.zSource) / Mpc2cm / 100.
+	# Compute mean free path in 100 Mpc 
+	# optical depth needs to be interpolation pointer with right redshift
+	d_L /= self.tau.opt_depth_array(self.zSource,self.eps2E(epsGeV))[0]
+	return 1.18e8 * np.sqrt(np.sqrt(d_L/self.tmax)*self.BIGMF) / (1. + self.zSource)
+
+    def gammaDeflect(self,epsGeV):
+	"""
+	Returns minimum gamma factor for IC scattering (Thomson limit integration)
+	for cascade emission. Denotes the gamma factor when e^+e^- pairs 
+	are deflected outside the illuminated cone with opening angle 1/BulkGamma.
+
+	Parameters
+	----------
+	epsGeV:		n-dim array, energy of upscattered CMB photons
+
+	Returns
+	-------
+	n-dim array with minimum gamma factors.
+
+	Notes
+	-----
+	"""
+	return 1.08e6*np.sqrt(self.BIGMF*self.bulkGamma)/(1. + self.zSource)**2. * np.ones(epsGeV.shape[0])
+	# Isotropy:
+	#return 1.08e6*np.sqrt(B_IGMF_15/np.pi)/(1. + z)**2.
+    def gammaCMB(self,epsGeV):
+	"""
+	Returns minimum gamma factor for IC scattering (Thomson limit integration)
+	for scattering up CMB photons. 
+
+	Parameters
+	----------
+	epsGeV:		n-dim array, energy of upscattered CMB photons
+
+	Returns
+	-------
+	n-dim array with minimum gamma factors.
+
+	Notes
+	-----
+	"""
+	return np.sqrt(epsGeV*1e9/4./E_CMB)
+
+    def gammaMin(self,epsGeV):
+	"""
+	Determines the minimum gamma factor for IC scattering (Thomson limit integration)
+	for scattering up CMB photons by choosing the maximum of gammaCMB, gammaEngine, and gammaDeflect.
+
+	Parameters
+	----------
+	epsGeV:		n-dim array, energy of upscattered CMB photons
+
+	Returns
+	-------
+	n-dim array with minimum gamma factors.
+
+	Notes
+	-----
+	"""
+	g		= self.gammaCMB(epsGeV)
+	g		= np.vstack((g,self.gammaEngine(epsGeV)))
+	g		= np.vstack((g,self.gammaDeflect(epsGeV)))
+	return np.max(g, axis = 0)
+
+    def cascadeSpec(self,epsGeV,gmin = None, gsteps = 20, Esteps = 30, epsmin = 1e-10, epsmax = 1e1):
+	"""
+	Calculate cascade spectrum.  
+
+	Parameters
+	----------
+	epsGeV:		n-dim array, energy of upscattered CMB photons, in GeV
+
+	kwargs
+	------
+	gmin:	n-dim array with minimum gamma-factors. If none, calculated from gammaMin function (default = None)
+	gsteps:	int, number of steps for gamma integration (default = 20)
+	Esteps:	int, number of steps for energy integrations 
+	epsmin: float, minimum energy of CMB integration, in eV (default = 1e-10)
+	epsmin: float, maximum energy of CMB integration, in eV (default = 1e1)
+
+	Returns
+	-------
+	n-dim array with cascade spectrum in 1/cm^2/s/eV 
+
+	Notes
+	-----
+	"""
+	if gmin == None:
+	    gmin = log(self.gammaMin(epsGeV))
+	else:
+	    gmin = log(gmin)
+
+	tauCut = 100.
+	Emax = 10.**(self.tau.opt_depth_Inverse(self.zSource,tauCut)) / 1e3
+	gmax = log(Emax * 1e12 / (2. * M_E_EV)) * 0.999
+
+	if np.all(gmin >= gmax):
+	    print '*** all minimum gamma values are larger than the maximum gamma value:'
+	    print '*** gmax: {0:.3e}'.format(exp(gmax))
+	    print '*** max(gammaMin): {0:.3e}'.format(np.max(self.gammaMin(epsGeV)))
+	    print '*** max(gammaEngine): {0:.3e}'.format(np.max(self.gammaEngine(epsGeV)))
+	    print '*** max(gammaDeflect): {0:.3e}'.format(np.max(self.gammaDeflect(epsGeV)))
+	    print '*** max(gammaCMB): {0:.3e}'.format(np.max(self.gammaCMB(epsGeV)))
+	    return np.ones(epsGeV.shape) * -1
+	    
+
+	# mask out regions that where gmin < gmax
+	gmin = gmin[gmin < gmax]
+	epsGeV = epsGeV[gmin < gmax]
+
+	for i,g in enumerate(gmin):
+	    if not i:
+		logGamma = np.linspace(g,gmax,gsteps)
+		for j,lgi in enumerate(logGamma):
+		    if not j:
+			logEarray	= linspace(log(2. * M_E_EV * 1e-12) + lgi, log(Emax), Esteps)
+			logEpsArray	= linspace(log(epsmin), log(epsmax),Esteps)
+			tauArray	= self.tau.opt_depth_array(self.zSource,exp(logEarray))[0]
+			tauArray[tauArray > tauCut] = tauCut * ones(sum(tauArray > tauCut))
+		    else:
+			lE		= linspace(log(2. * M_E_EV * 1e-12) + lgi, log(Emax), Esteps)
+			logEarray = vstack((logEarray,lE))
+
+			lEps		= linspace(log(epsmin), log(epsmax), Esteps)
+			logEpsArray	= vstack((logEpsArray,lEps))
+
+			ta		= self.tau.opt_depth_array(self.zSource,exp(lE))[0]
+			ta[ta > tauCut] = tauCut * ones(sum(ta > tauCut))
+			tauArray	= vstack((tauArray,ta))
+	    else:
+		lg = linspace(g,gmax,gsteps)	# dim: epsGeV, gsteps
+		logGamma = np.vstack((logGamma,lg))
+		for j,lgi in enumerate(lg):
+		    if not j:
+			lEj	= linspace(log(2. * M_E_EV * 1e-12) + lgi, log(Emax), Esteps)
+			lEpsj	= linspace(log(epsmin), log(epsmax) ,Esteps)
+			taj	= self.tau.opt_depth_array(self.zSource,exp(lEj))[0]
+		    else:
+			lE 	= linspace(log(2. * M_E_EV * 1e-12) + lgi, log(Emax), Esteps)
+			lEj	= vstack((lEj,lE))
+
+			lEps	= linspace(log(epsmin), log(epsmax), Esteps)
+			lEpsj	= vstack((lEps,lEpsj))
+
+			ta	= self.tau.opt_depth_array(self.zSource,exp(lE))[0]
+			ta[ta > tauCut] = tauCut * ones(sum(ta > tauCut))
+			taj	= vstack((taj,ta))
+
+		logEarray	= dstack((logEarray,lEj))	# dim: gsteps, Esteps, epsGeV
+		logEpsArray	= dstack((logEpsArray,lEpsj))	# dim: gsteps, Esteps, epsGeV
+		tauArray	= dstack((tauArray,taj))	# dim: gsteps, Esteps, epsGeV
+
+	for i in range(Esteps):
+	    if not i:
+		logGammaArray = logGamma
+	    else:
+		logGammaArray = dstack((logGammaArray,logGamma))
+	logGammaArray	= np.transpose(logGammaArray, axes = (1,2,0))
+	logGamma	= logGamma.transpose()	# dim: gsteps, epsGeV
+
+	EKernel		= self.intSpec(exp(logEarray),self.intSpecPar) * (exp(tauArray) - 1.) * exp(logEarray)\
+			  * exp(-(exp(logEarray) / self.EmaxTeV) ** 10.)
+	gammaKernel	= simps(EKernel,logEarray,axis = 1)
+
+
+	x = epsGeV * 1e9 / (4. * exp(logEpsArray) * exp(2. * logGammaArray))
+
+	x = ma.array(x, mask = x > 1)
+	logEpsArray = ma.array(logEpsArray, mask = x > 1)
+
+	EpsKernel = self._F_IC_T(x) * 4. * exp(2. * logGammaArray) * nphotCMBarray(exp(logEpsArray)) / exp(logEpsArray)
+	EpsKernel *= exp(logEpsArray)
+
+	EpsKernel = ma.array(EpsKernel, mask = x > 1)
+
+	gammaKernel *= simps(EpsKernel,logEpsArray, axis = 1)
+	gammaKernel /= exp(logGamma * 6.)
+	gammaKernel *= exp(logGamma)
+
+	result = simps(gammaKernel,logGamma, axis = 0)
+
+	result *= M_E_EV / U_CMB * 9. / 64.
+
+	return result,epsGeV
 
 # eps in GeV for TeV photons converted to e^+e^- pairs 
 # and IC scattering on CMB photons in the Thomson regime
 E2eps = lambda ETeV: 0.63*ETeV**2.
 # Inverse of the above:
 eps2E = lambda epsGeV: 1.26*np.sqrt(epsGeV)
+
 
 # Computation of Lower Limits for IC integration over gamma ---------------------------------------#
 def GammaMin(t_yr,B_IGMF_15,z,tau,eps_GeV,BulkGamma):
@@ -144,7 +412,8 @@ def CascadeSpecSimps(eps1, gmin, tau, specparams = (1e-10,-2.,10.) ):
     for i,g in enumerate(log_gamma_array):
 	Gamma = np.exp(g)
 	Emin = math.log(2.*M_E_EV*1e-12*Gamma)
-	Emax = math.log(5e1)
+	#Emax = math.log(5e1)
+	Emax = math.log(15.)
 	if Emin > Emax:
 	    gamma_kern_array[i] = 0.
 	else:
@@ -152,7 +421,8 @@ def CascadeSpecSimps(eps1, gmin, tau, specparams = (1e-10,-2.,10.) ):
 	    E_inject_array = np.empty((len(log_E_array),))
 	    for j,e in enumerate(log_E_array):
 		E = np.exp(e)
-		E_inject_array[j] = E ** G * math.exp(-(E/Ebr) ** 10.)*( math.exp(tau(E)) - 1. )
+		#E_inject_array[j] = E ** G * math.exp(-(E/Ebr) ** 10.)*( np.exp(tau(E)) - 1. )
+		E_inject_array[j] = E ** G*( np.exp(tau(E)) - 1. )
 		E_inject_array[j] *= E
 
 	    gamma_kern_array[i] = integrate.simps(E_inject_array,log_E_array)
@@ -180,7 +450,6 @@ def CascadeSpecSimps(eps1, gmin, tau, specparams = (1e-10,-2.,10.) ):
     result *= M_E_EV / U_CMB * 9. / 64. * N0
     return result
 
-from a3p.constants import *
 def calc_EBL_mean_free_path(z_end, E_TeV, ebl, h=h, W_m=0.26, W_l=0.74) :
     """
     Calculates the mean free path for pair production on the EBL

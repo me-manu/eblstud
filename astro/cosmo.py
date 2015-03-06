@@ -3,7 +3,7 @@ from eblstud.misc.constants import *
 import numpy as np
 import scipy.integrate
 from scipy.integrate import simps
-
+cosmo = [h, OmegaM, OmegaL]
 def nphotCMB(eps):
     """
     return differential number density of CMB in 1/eV/cm^3, eps is in eV
@@ -19,6 +19,17 @@ def nphotCMB(eps):
 	den = math.exp(kx) - 1.
     result /= den
     return result
+
+from numpy import ma
+def nphotCMBarray(eps):
+    """
+    return differential number density of CMB in 1/eV/cm^3, eps is in eV
+    See Unsoeld & Baschek p. 107
+    """
+    kx = eps/8.617e-5/T_CMB
+    result = 1.32e13 * eps **2.
+    kx = kx * (kx <= 100.) + np.ones(kx.shape) * 1e-40 * (kx > 100.)
+    return result / (np.exp(kx) - 1.)
 
 def PropTime2Redshift(h = h, OmegaM = OmegaM, OmegaL = OmegaL):
     """
@@ -55,7 +66,7 @@ def LumiDistanceSimps(z,cosmo=[h, OmegaM, OmegaL],steps = 30):
 
     return 1e9 * yr2sec * CGS_c / ( h / 9.777752 ) * (1. + z) * simps(kernel,z_array,axis = 1)
 
-def arcsec2Mpc(z,cosmo=[h, OmegaM, OmegaL],steps = 30):
+def arcsec2Mpc(z,cosmo=cosmo,steps = 30):
     """
     Compute conversion factor for a distance given arcsec to Mpc at redshift z 
     from simps integration

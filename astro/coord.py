@@ -79,8 +79,9 @@ def angsep(r1,r2,d1,d2):
     th2 = (90.0*np.ones(d2.shape)-d2)*pi/180.  
     ph1 = pi/180. * r1  
     ph2 = pi/180. * r2  
+    tt1,tt2 = np.meshgrid(th1,th2)
+    pp1,pp2 = np.meshgrid(ph1,ph2)
 
-    cth = np.sin(th1)*np.sin(th2)*\
-	(np.cos(ph1)*np.cos(ph2)+np.sin(ph1)*np.sin(ph2))+np.cos(th1)*np.cos(th2)
-    cth[np.where(cth > 1.)[0]] = np.zeros(cth[np.where(cth > 1.)[0]].shape)
-    return np.arccos(cth)*180./pi
+    cth = np.sin(tt1)*np.sin(tt2)*\
+	(np.cos(pp1)*np.cos(pp2)+np.sin(pp1)*np.sin(pp2))+np.cos(tt1)*np.cos(tt2)
+    return np.arccos(cth)*180./pi * ( cth <= 1. )

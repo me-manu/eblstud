@@ -262,8 +262,8 @@ class OptDepth(object):
 		logE_array	= np.vstack((logE_array,logE))
 		t_array		= np.vstack((t_array,self.opt_depth_array(z,np.exp(logE))[0]))
 	# return averaged tau value
-	return	simps(func(params,np.exp(logE_array)) * t_array * np.exp(logE_array), logE_array, axis = 1) / \
-		simps(func(params,np.exp(logE_array)) * np.exp(logE_array), logE_array, axis = 1)
+	return	simps(func(np.exp(logE_array),**params) * t_array * np.exp(logE_array), logE_array, axis = 1) / \
+		simps(func(np.exp(logE_array),**params) * np.exp(logE_array), logE_array, axis = 1)
 
     def clear(self):
 	self.z = np.array([])

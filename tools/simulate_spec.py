@@ -296,10 +296,13 @@ class SimulateObs(object):
 	fOFF  = poisson.rvs(bb / alpha)			# do the random number generation
 	fExcess	= fON - alpha * fOFF
 
-	S	= np.ma.masked_array(li_ma(np.ma.masked_array(fON, mask = fON <= 0.),
-					    np.ma.masked_array(fOFF, mask = fON <= 0.),alpha), 
-				    mask = (fON <= 0.) & (fOFF <= 0.)
-				    )
+#	S	= np.ma.masked_array(li_ma(np.ma.masked_array(fON, mask = fON <= 0.),
+#					    np.ma.masked_array(fOFF, mask = fON <= 0.),alpha), 
+#				    mask = (fON <= 0.) & (fOFF <= 0.)
+#				    )
+	S	= li_ma(fON * (fON > 0.) + 1e-5 * (fON <= 0.),
+			fOFF * (fOFF > 0.) + 1e-5 * (fOFF <= 0.),alpha) 
+				    
 
 	maskON	= fON	> self.GAUSL
 	maskOFF	= fOFF	> self.GAUSL

@@ -20,6 +20,7 @@ import scipy.integrate
 from scipy.interpolate import RectBivariateSpline as BiSpline
 import scipy.interpolate
 from eblstud.misc.constants import *
+from os.path import *
 
 # ================================================================================#
 
@@ -33,8 +34,8 @@ def nuInu_Micron_2_JPhotDens(l,nuInu):
     return np.log(e_J), np.log(n)
 
 # -- EBL Model from 2D Matrix ----------------------------------------------------------------#
-class EBLModel:
-    def __init__(self,file_name='None',model='kneiske'):
+class EBLModel(object):
+    def __init__(self,path='/afs/desy.de/user/m/meyerm/projects/blazars/EBLmodelFiles/',model='kneiske'):
 	"""
 	Read EBL or Optical Depth Data from 2D Matrix
 
@@ -47,15 +48,27 @@ class EBLModel:
 	ebl=ebl [ lambda, z ]
 	"""
 	self.model = model
+	try:
+	    ebl_file_path = os.environ['EBL_FILE_PATH']
+	except KeyError:
+	    warnings.warn("The EBL File environment variable is not set! Using {0} as path instead.".format(path), RuntimeWarning)
+	    ebl_file_path = path
 	# Get EBL from data file
 	if model == 'kneiske': 
 	    if file_name == 'None':
-		file_name = '/afs/desy.de/user/m/meyerm/projects/blazars/EBLmodelFiles/nuInu_kneiske.dat'
+		file_name = join(ebl_file_path,'nuInu_kneiske.dat')
 	    data = np.loadtxt(file_name)
 	    self.z = data[0,1:]
 	    self.ebl= data[1:,1:]
 	    if model == 'kneiske':
 		self.l = data[1:,0]
+	elif model == 'cuba': 
+	    if file_name == 'None':
+		file_name = join(ebl_file_path,'CUBA_UVB.dat')
+	    data = np.loadtxt(file_name)
+	    self.z = data[0,1:]
+	    self.l = data[1:,0] * 1e-4	# in microns
+	    self.ebl= data[1:,1:] * SI_c / (self.l * 1e-6) # in nu I nu
 	else:
 	    raise ValueError("Unknown model chosen! Only Kneiske implemented at this time")
 
@@ -72,6 +85,8 @@ class EBLModel:
 	self.l_min, self.l_max = min(self.l), max(self.l)
 	self.e_J_min,self.e_J_max = np.exp(min(self.e_J)),np.exp(max(self.e_J))
 	self.e_min_J,self.e_max_J = np.exp(min(self.e_J)),np.exp(max(self.e_J))
+
+	return
 
 
     def nuInu(self,z,micron):
