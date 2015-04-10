@@ -1,5 +1,5 @@
 from eblstud.misc.constants import M_E_EV
-from numpy import invert,power,log10,zeros,invert, array, sum, pi
+from numpy import invert,power,log10,zeros,invert, array, sum, pi, log
 
 # ---- fitting constants for line absorption ----- #
 def set_constants(C = None):
@@ -53,14 +53,18 @@ def line_absorption(EGeV, **kwargs):
     kwargs.setdefault('z',0.)
     kwargs.setdefault('Eline_eV',13.6)
     kwargs.setdefault('Nline',1e25)
-    x			= EGeV * 1e9 * (1. + kwargs['z']) * kwargs['Eline_eV'] / M_E_EV**2. - 1.
-    m			= x > 0.
-    x[m]		= log10(x[m])
-    x[invert(m)]	= zeros(sum(invert(m)))
+
+    s			= EGeV * 1e9 * (1. + kwargs['z']) * kwargs['Eline_eV'] / M_E_EV**2.
+    x			= zeros(s.shape)
+    m			= s > 1.
+    x[m]		= log10(s[m] - 1.)
     result		= zeros((A.shape[0],x.shape[0]))
+    m			= (s > 1.) & (s < 10.)
+
     for i,a in enumerate(A):
         result[i][m]	= A[i] * power(x[m],i)
 
     result		= 10.**sum(result, axis = 0)
-    result[invert(m)]	= zeros(sum(invert(m)))
+    result[s > 10.]	= (2.*s[s > 10.]*(log(4.*s[s > 10.])-2.) + log(4.*s[s > 10.])*(log(4.*s[s > 10.])-2.) - (pi*pi-9.)/3.) / (s[s > 10.] * s[s > 10.])
+    result[s <= 1.]	= zeros(sum(s <= 1.))
     return result * kwargs['Nline'] * pi * 2.8179e-13 ** 2.
