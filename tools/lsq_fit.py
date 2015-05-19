@@ -277,7 +277,7 @@ def prior_pl_ind(x,y):
     my = y > 0.
 
     x = x[my]
-    y = x[my]
+    y = y[my]
 
     if len(y) > 3:
 	plind = (np.log(y[-2]) - np.log(y[1])) / (np.log(x[-2]) - np.log(x[1]))
