@@ -274,6 +274,12 @@ def prior_norm(x,y):
 def prior_pl_ind(x,y):
     """returns prior for power law index by calculating index between y[1] and y[-2] or y[-1]"""
 
+    mx = x > 0.
+    my = y > 0.
+
+    x = x[mx]
+    y = x[my]
+
     if len(y) > 3:
 	plind = (np.log(y[-2]) - np.log(y[1])) / (np.log(x[-2]) - np.log(x[1]))
     else:
