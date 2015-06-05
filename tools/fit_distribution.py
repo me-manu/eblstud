@@ -3,7 +3,7 @@ import numpy as np
 import iminuit 
 import warnings,logging
 from scipy.stats import poisson
-from scipy.stats import chi2 
+from scipy.stats import chi2, lognorm
 from scipy.stats import norm
 from scipy.stats import kstest
 # ----------------------------------- #
@@ -39,9 +39,13 @@ class FitDistribution(object):
 
 	if self.distr == 'chi2':
 	    self.func = self.chi2
+	if self.distr == 'lognorm':
+	    self.func = self.lognorm
 
 	return
 
+    def lognorm(self, mean, s):
+	return self.__fit_func(mean,s)
     def chi2(self, df):
 	return self.__fit_func(df)
 
