@@ -53,7 +53,7 @@ class FitDistribution(object):
 	return self.__fit_func(df)
 
     def ncx2(self, df, nc):
-	return self.__fit_func(df)
+	return self.__fit_func(df, nc)
 
     def __fit_func(self,*args):
 	return kstest(self.data,self.distr,args = args, mode = self.ksmode)[0]
@@ -72,7 +72,6 @@ class FitDistribution(object):
 		pinit[k] = 1.
 	if not len(error.keys()):
 	    for k in pars:
-		print k
 		error[k] = pinit[k] * self.int_steps
 	if not len(limit.keys()):
 	    for k in pars:
