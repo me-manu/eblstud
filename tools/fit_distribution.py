@@ -3,7 +3,7 @@ import numpy as np
 import iminuit 
 import warnings,logging
 from scipy.stats import poisson
-from scipy.stats import chi2, lognorm
+from scipy.stats import chi2, lognorm, ncx2
 from scipy.stats import norm
 from scipy.stats import kstest
 # ----------------------------------- #
@@ -13,7 +13,7 @@ class FitDistribution(object):
 	"""
 	kwargs
 	------
-	distr:		str, name of distribution. Available options are: chi2 (default)
+	distr:		str, name of distribution. Available options are: chi2 (default), lognorm, ncx2 
 	ksmode:		str, mode for kstest, see scipy.stats.kstest for more details (default: asymp)
 	full_output:	bool, if True, errors will be estimated additionally with minos, covariance matrix will also be returned
 	print_level:	0,1, level of verbosity, defualt = 0 means nothing is printed
@@ -41,6 +41,8 @@ class FitDistribution(object):
 	    self.func = self.chi2
 	if self.distr == 'lognorm':
 	    self.func = self.lognorm
+	if self.distr == 'ncx2':
+	    self.func = self.ncx2
 
 	return
 
@@ -48,6 +50,9 @@ class FitDistribution(object):
 	return self.__fit_func(s,mean)
 
     def chi2(self, df):
+	return self.__fit_func(df)
+
+    def ncx2(self, df, nc):
 	return self.__fit_func(df)
 
     def __fit_func(self,*args):
