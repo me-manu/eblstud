@@ -93,4 +93,4 @@ class FitDistribution(object):
 
 	m.migrad(ncall = self.ncall)
 
-	return m.fval, m.values, m.errors
+	return (kstest(self.data,self.distr,args = m.values.values(), mode = self.ksmode)), m.values, m.errors
