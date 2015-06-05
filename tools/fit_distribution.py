@@ -46,6 +46,7 @@ class FitDistribution(object):
 
     def lognorm(self, mean, s):
 	return self.__fit_func(mean,s)
+
     def chi2(self, df):
 	return self.__fit_func(df)
 
@@ -57,6 +58,7 @@ class FitDistribution(object):
 	self.data	 = data
 
 	pars = iminuit.describe(self.func)
+	print 'parameters: ', pars
 	if not len(fix.keys()):
 	    for k in pars:
 		fix[k] = 0
