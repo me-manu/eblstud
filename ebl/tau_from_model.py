@@ -91,6 +91,7 @@ class OptDepth(object):
 		Name:		Publication:
 		franceschini	Franceschini et al. (2008)	http://www.astro.unipd.it/background/
 		kneiske		Kneiske & Dole (2010)
+		finke		Finke et al. (2012)		http://www.phy.ohiou.edu/~finke/EBL/
 		dominguez	Dominguez et al. (2011)
 		inuoe		Inuoe et al. (2013)		http://www.slac.stanford.edu/~yinoue/Download.html
 		gilmore		Gilmore et al. (2012)		(fiducial model)
@@ -103,12 +104,14 @@ class OptDepth(object):
 	    warnings.warn("The EBL File environment variable is not set! Using {0} as path instead.".format(path), RuntimeWarning)
 	    ebl_file_path = path
 
-	if model == 'kneiske' or model == 'dominguez':
+	if model == 'kneiske' or model == 'dominguez' or model == 'finke':
 	    if file_name == 'None':
 		if model == 'kneiske':
 		    file_name = os.path.join(ebl_file_path , 'tau_ebl_cmb_kneiske.dat')
 		if model == 'dominguez':
 		    file_name = os.path.join(ebl_file_path , 'tau_dominguez10.dat')
+		if model == 'finke':
+		    file_name = os.path.join(ebl_file_path , 'tau_modelC_Finke.txt')
 
 	    data = np.loadtxt(file_name)
 	    self.z = data[0,1:]
@@ -117,6 +120,7 @@ class OptDepth(object):
 		self.logEGeV = data[1:,0]
 	    else:
 		self.logEGeV = np.log10(data[1:,0]*1e3)
+
 	elif model == 'franceschini':
 	    if file_name == 'None':
 		file_name = os.path.join(ebl_file_path , 'tau_fran08.dat')
