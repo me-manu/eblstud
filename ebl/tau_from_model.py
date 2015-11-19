@@ -22,6 +22,7 @@ import math
 from scipy.interpolate import interp1d
 from scipy.integrate import simps
 from scipy.interpolate import RectBivariateSpline as RBSpline
+from scipy.interpolate import UnivariateSpline as USpline
 import warnings
 import os
 # ------------------------------------------------------------#
@@ -228,7 +229,7 @@ class OptDepth(object):
 	-------
 	energy, float, log10(E/GeV) 
 	"""
-	Enew = interp1d(self.tauSpline(self.logEGeV,z)[:,0],self.logEGeV)
+	Enew = USpline(self.tauSpline(self.logEGeV,z)[:,0],self.logEGeV, s = 0, k = 2, ext = 'extrapolate')
 	return Enew(tau)
 
     def opt_depth_Ebin(self,z,Ebin,func,params,Esteps = 50):

@@ -29,10 +29,9 @@ from numpy.ma import masked_array
 from numpy import dstack
 from numpy import log,sqrt 
 from eblstud.misc.constants import *
+from os.path import join
 import time
 # ------------------------------------------------------------#
-
-
 
 class EBL(object):
     """
@@ -79,6 +78,7 @@ class EBL(object):
 		dominguez	Dominguez et al. (2011)
 		inuoe		Inuoe et al. (2013)		http://www.slac.stanford.edu/~yinoue/Download.html
 		gilmore		Gilmore et al. (2012)		(fiducial model)
+		finke		Finke et al. (2012)		http://www.phy.ohiou.edu/~finke/EBL/
 	"""
 	self.z		= np.array([])		#redshift
 	self.logl	= np.array([])		#log (wavelength / micron)
@@ -94,18 +94,20 @@ class EBL(object):
 		ebl_file_path = path
 
 	    if model == 'kneiske':
-		file_name = ebl_file_path + 'ebl_nuFnu_tanja.dat'
+		file_name = join(ebl_file_path , 'ebl_nuFnu_tanja.dat')
 	    elif model == 'franceschini':
-		file_name = ebl_file_path + 'ebl_franceschini.dat'
+		file_name = join(ebl_file_path , 'ebl_franceschini.dat')
 	    elif model == 'dominguez':
-		file_name = ebl_file_path + 'ebl_dominguez.dat'
+		file_name = join(ebl_file_path , 'ebl_dominguez.dat')
 	    elif model == 'inoue':
-		file_name = ebl_file_path + 'EBL_z_0_baseline.dat'
+		file_name = join(ebl_file_path , 'EBL_z_0_baseline.dat')
 		logging.warning("Inoue model is only provided for z = 0!")
 	    elif model == 'gilmore':
-		file_name = ebl_file_path + 'eblflux_fiducial.dat'
+		file_name = join(ebl_file_path , 'eblflux_fiducial.dat')
 	    elif model == 'cuba':
-		file_name = ebl_file_path + 'CUBA_UVB.dat'
+		file_name = join(ebl_file_path , 'CUBA_UVB.dat')
+	    elif model == 'finke':
+		file_name = join(ebl_file_path , 'ebl_modelC_Finke.txt')
 	    else:
 		raise ValueError("Unknown EBL model chosen!")
 
@@ -116,19 +118,20 @@ class EBL(object):
 		self.nuInu = np.log10(data[:,1])
 		self.eblSpline = interp1d(self.logl,self.nuInu)
 		return
-	    if model == 'gilmore':
+	    elif model == 'gilmore':
 		self.z = data[0,1:]
-		self.logl = np.log10(data[2:,0] * 1e-4)			# convert from Angstrom to micro meter
-		self.nuInu = data[2:,1:]			# do not use first lines, as it includes zeros, is photon density
-		self.nuInu *= 1e6 * np.meshgrid(data[2:,0],self.z)[0].transpose()		# convert from ergs/s/cm^2/Ang/sr to nW/m^2/sr
+		self.logl = np.log10(data[1:,0] * 1e-4)			# convert from Angstrom to micro meter
+		self.nuInu = data[1:,1:]			
+		self.nuInu[self.nuInu == 0.] = 1e-20 * np.ones(np.sum(self.nuInu == 0.))
+		self.nuInu = (self.nuInu.T * data[1:,0]).T * 1e4 * 1e-7 * 1e9		# convert from ergs/s/cm^2/Ang/sr to nW/m^2/sr
 		self.nuInu = np.log10(self.nuInu)
-	    if model == 'cuba':
+	    elif model == 'cuba':
 		self.z = data[0,1:-1]
 		self.logl = np.log10(data[1:,0] * 1e-4)
 		self.nuInu = data[1:,1:-1]
 		# replace zeros by 1e-40
 		idx = np.where(data[1:,1:-1] == 0.)
-		self.nuInu[idx] = np.ones(np.sum(self.nuInu == 0.)) * 1e-40
+		self.nuInu[idx] = np.ones(np.sum(self.nuInu == 0.)) * 1e-20
 		self.nuInu = np.log10(self.nuInu.transpose() * SI_c / (10.**self.logl * 1e-6)).transpose()	# in erg / cm^2 / s / sr
 		self.nuInu += 6	# in nW / m^2 /  sr
 
@@ -140,6 +143,9 @@ class EBL(object):
 		self.z = data[0,1:]
 		self.logl = np.log10(data[1:,0])
 		self.nuInu = np.log10(data[1:,1:])
+		if model == 'finke': 
+		    self.logl = self.logl[::-1] - 4.
+		    self.nuInu = self.nuInu[::-1]
 	else:
 	    data	= np.loadtxt(file_name)
 	    self.z	= data[0,1:]
@@ -254,6 +260,41 @@ class EBL(object):
 	result = simps(result,mm, axis = 0) * 3. / 16. * CGS_tcs * 2.62e-4	# last factor to convert nuInu to 1 / ev / cm^3
 
 	return 1. / result / Mpc2cm
+
+    def n_array(self,z,e):
+	"""
+	Returns EBL photon density in [1 / cm^3 / eV] for redshift z and energy e (eV) from BSpline Interpolation
+
+	Parameters
+	----------
+	z: redshift
+	    scalar or N-dim numpy array
+	e: energy in eV 
+	    scalar or M-dim numpy array
+
+	Returns
+	-------
+	(N x M)-np.array with corresponding photon density values
+
+	Notes
+	-----
+	if any z < self.z (from interpolation table), self.z[0] is used and RuntimeWarning is issued.
+	"""
+	if np.isscalar(e):
+	    e = np.array([e])
+	if np.isscalar(z):
+	    z = np.array([z])
+
+	# convert energy in eV to wavelength in micron
+	l	=  SI_h * SI_c / e / SI_e  * 1e6	
+	# convert energy in J
+	e_J	= e * SI_e
+
+	n = self.ebl_array(z,l)
+	# convert nuInu to photon density in 1 / J / m^3
+	n = 4.*PI / SI_c / e_J**2. * n  * 1e-9
+	# convert photon density in 1 / eV / cm^3 and return
+	return n * SI_e * 1e-6
 
     def ebl_array(self,z,l):
 	"""

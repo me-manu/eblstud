@@ -4,21 +4,31 @@ import numpy as np
 import scipy.integrate
 from scipy.integrate import simps
 cosmo = [h, OmegaM, OmegaL]
+
 def nphotCMB(eps):
     """
     return differential number density of CMB in 1/eV/cm^3, eps is in eV
     See Unsoeld & Baschek p. 107
     """
+    if np.isscalar(eps):
+	scalar = True
+	eps = np.array([eps])
+    else: 
+	scalar = False
+
+
     kx = eps/8.617e-5/T_CMB
     result = 1.32e13 * eps **2.
-    if kx < 1e-10:
-	den = kx + kx **2. / 2.
-    elif kx > 100.:
-	return 1e-40
-    else:
-	den = math.exp(kx) - 1.
+
+    den = np.ones(eps.shape[0]) * 1e-40
+    den[kx < 1e-10] = kx[kx < 1e-10] + kx[kx < 1e-10] **2. / 2.
+    den[(kx >= 1e-10) & (kx < 100.)] = np.exp(kx[(kx >= 1e-10) & (kx < 100.)]) - 1.
     result /= den
-    return result
+
+    if scalar:
+	return result[0]
+    else:
+	return result
 
 from numpy import ma
 def nphotCMBarray(eps):
