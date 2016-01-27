@@ -116,7 +116,7 @@ def init_checks(x,y,s, npar):
     if not len(x) == len(y) or not len(x) == len(s) or not len(y) == len(s):
 	raise TypeError("Lists must have same length!")
     if not len(x) > npar:
-	print "Not sufficient number of data points => Returning -1"
+	print "Not sufficient number of data points!"
 	return -1
 
     x = np.array(x)
@@ -170,7 +170,10 @@ def runMinuitFit(m, fitFunc, dof, **kwargs):
 	    m.minos(k,1.)
 	logging.debug("Minos finished")
 
-    fit_stat = m.fval, dof , pvalue(float(dof), m.fval)
+    if kwargs['up'] == 1.:	# chi2 fit
+	fit_stat = m.fval, dof , pvalue(float(dof), m.fval)
+    if kwargs['up'] == 0.5:	# chi2 fit
+	fit_stat = m.fval
 
     return m, fit_stat
 
