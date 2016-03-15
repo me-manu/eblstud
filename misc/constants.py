@@ -41,5 +41,6 @@ TeV2Hz	=	2.4179895e26
 eV2Hz 	=	2.4179895e+14
 Jy2ergscmHz = 1e-23
 
-# Misc
+# Electron constants
 M_E_EV	=	5.10999e5	# Electron mass in eV
+R_E_CM  =	2.8179e-13	# Electron radius in cm
