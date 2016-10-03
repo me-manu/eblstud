@@ -23,10 +23,21 @@ logging.basicConfig(level=logging.WARNING)
 
 # - Fitting functions ----------------------------------------------------------------------- #
 pl      = lambda x, **p : p['Prefactor'] * (x / p['Scale']) ** p['Index']
-lp      = lambda x, **p : p['norm'] * (x / p['Eb']) ** (p['alpha'] + p['beta'] * np.log(x / p['Eb']))
-pl2     = lambda x, **p : p['Integral'] * x ** p['Index'] * (p['Index'] + 1.) / (p['UpperLimit'] ** (p['Index'] + 1.) - p['LowerLimit'] ** (p['Index'] + 1.))
+sepl      = lambda x, **p : p['Prefactor'] * (x / p['Scale']) ** p['Index'] *\
+			    np.exp( - np.power(x / p['Cut'],p['Supexp'] ))
+lp      = lambda x, **p : p['norm'] * (x / p['Eb']) ** (p['alpha'] + \
+				p['beta'] * np.log(x / p['Eb']))
+pl2     = lambda x, **p : p['Integral'] * x ** p['Index'] * (p['Index'] + 1.) /\
+			    (p['UpperLimit'] ** (p['Index'] + 1.) -\
+			    p['LowerLimit'] ** (p['Index'] + 1.))
 bpl_in	= lambda x,xb, f: 1. + np.power(x*np.abs(xb),f)
-bpl	= lambda x, **p: p['Prefactor']*(np.power(x / p['Scale'],p['Index1']))*np.power(bpl_in(x / p['Scale'],p['BreakValue'],p['Smooth']),(p['Index2'] - p['Index1'])/p['Smooth'])
+bpl	= lambda x, **p: p['Prefactor']*(np.power(x / p['Scale'],p['Index1'])) \
+			* np.power(bpl_in(
+				x / p['Scale'],
+				p['BreakValue'],
+				p['Smooth']),
+				(p['Index2'] - p['Index1'])/p['Smooth']
+				)
 
 # - Chi functions --------------------------------------------------------------------------- #
 errfunc = lambda func, x, y, s, **p: (func(x, **p)-y) / s 
