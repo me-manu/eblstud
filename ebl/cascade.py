@@ -4,7 +4,7 @@ import math
 from scipy import integrate
 from scipy import Inf
 from eblstud.astro.cosmo import *
-import eblstud.ebl.tau_from_model as tfm
+from ebltable.tau_from_model import OptDepth
 from eblstud.tools.iminuit_fit import pl,lp
 from eblstud.misc.constants import *
 import logging
@@ -66,7 +66,7 @@ class Cascade(object):
 	# ------------------------
 	self.__dict__.update(kwargs)
 
-	self.tau = tfm.OptDepth(model = self.eblModel)
+	self.tau = OptDepth.readmodel(model = self.eblModel)
 
 	# energy (in GeV) of CMB photon upscattered by electron produced in EBL
 	self.E2eps = lambda ETeV: 0.63*ETeV**2.
@@ -138,7 +138,7 @@ class Cascade(object):
 	d_L = LumiDistance(self.zSource) / Mpc2cm / 100.
 	# Compute mean free path in 100 Mpc 
 	# optical depth needs to be interpolation pointer with right redshift
-	d_L /= self.tau.opt_depth_array(self.zSource,self.eps2E(epsGeV))[0]
+	d_L /= self.tau.opt_depth(self.zSource,self.eps2E(epsGeV))
 	# Also compute the IC cooling length, to compare to the coherence length
 	# of the B field. Use this to calculate the weigthing factor. 
 	w = self.weight(epsGeV)
@@ -319,8 +319,8 @@ class Cascade(object):
 
 		if not (logEprimMinTeV.mask[ilE,jlE] or logEE > log(self.EmaxTeV)):
 		    logEprim[ilE,jlE] = np.linspace(logEE, log(self.EmaxTeV), Esteps)
-		    tauPrim[ilE,jlE] = self.tau.opt_depth_array(
-				    self.zSource,exp(logEprim[ilE,jlE]))[0]
+		    tauPrim[ilE,jlE] = self.tau.opt_depth(
+				    self.zSource,exp(logEprim[ilE,jlE]))
 
 	# if all masks are true (gmin > gmax) || (ETeVmin > ETeVmax)
 	# return zero
@@ -427,8 +427,8 @@ class Cascade(object):
 
 	self.EminTeV, self.EmaxTeV = Emin, Emax
 	injFlux = self.intSpec(EeVinj_centers * 1e-12, **self.intSpecPar)
-	primFlux = injFlux * exp(-self.tau.opt_depth_array(self.zSource, 
-					EeVinj_centers * 1e-12)[0])
+	primFlux = injFlux * exp(-self.tau.opt_depth(self.zSource, 
+					EeVinj_centers * 1e-12))
 
 	return injFlux, primFlux, cascFlux
 
